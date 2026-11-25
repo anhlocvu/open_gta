@@ -19,10 +19,13 @@ var _down_t := 0.0
 var _wait_t := 0.0
 var _look: Node3D
 var _anim: AnimationPlayer
+var _flee_target := Vector3.ZERO
+var _has_flee_target := false
 
 
 func setup(p_path: Array[Vector3], start_i: int, slots := 6) -> void:
 	path = p_path
+	_has_flee_target = false
 	if path.size() >= 2:
 		var n := maxi(slots, 1)
 		var t := (float(posmod(start_i, n)) + 0.12) / float(n)
@@ -57,6 +60,7 @@ func knock_down() -> void:
 	mood = Mood.DOWN
 	_down_t = 7.0 if not is_officer else 3.2
 	rotation.z = 1.15
+	_emit_npc_audio(true)
 
 func take_damage(amount: float, region_multiplier := 1.0) -> void:
 	vitality.apply_damage(amount, region_multiplier)
@@ -69,18 +73,34 @@ func take_damage(amount: float, region_multiplier := 1.0) -> void:
 func scare(from: Vector3) -> void:
 	if downed:
 		return
+	var was_calm := mood in [Mood.WALK, Mood.WAIT, Mood.LOOK]
 	if is_officer:
 		mood = Mood.CHASE
+		if was_calm:
+			_emit_npc_audio(false)
 		return
+	if was_calm:
+		_emit_npc_audio(false)
 	if randf() < 0.28:
 		mood = Mood.COWER
 		_wait_t = 2.2
 		return
 	mood = Mood.FLEE
-	var away := global_position + (global_position - from).normalized() * (12.0 + randf() * 10.0)
-	away.y = 0.15
-	path = [away, path[path_i] if path.size() else global_position]
-	path_i = 0
+	var away_dir := global_position - from
+	away_dir.y = 0.0
+	if away_dir.length_squared() < 0.01:
+		away_dir = -global_transform.basis.z
+	_flee_target = global_position + away_dir.normalized() * (12.0 + randf() * 10.0)
+	_flee_target.y = 0.15
+	_has_flee_target = true
+
+
+func _emit_npc_audio(is_down: bool) -> void:
+	if not is_inside_tree():
+		return
+	var game := get_tree().current_scene
+	if game and game.get("a11y") and game.a11y and game.a11y.get("audio"):
+		game.a11y.audio.play_npc_reaction(global_position, is_down)
 
 
 func _mesh() -> void:
@@ -93,7 +113,13 @@ func _mesh() -> void:
 func _physics_process(delta: float) -> void:
 	if downed:
 		_down_t -= delta
-		velocity = Vector3.ZERO
+		velocity.x = 0.0
+		velocity.z = 0.0
+		if not is_on_floor():
+			velocity.y -= 24.0 * delta
+		else:
+			velocity.y = 0.0
+		move_and_slide()
 		Models.play_move(_anim, false)
 		if _down_t <= 0.0:
 			vitality.reset()
@@ -110,11 +136,12 @@ func _physics_process(delta: float) -> void:
 		_wait_t -= delta
 		velocity.x = 0.0
 		velocity.z = 0.0
-		if _look:
+		if is_instance_valid(_look):
 			var to := _look.global_position - global_position
-			rotation.y = lerp_angle(rotation.y, atan2(-to.x, -to.z), 6.0 * delta)
+			rotation.y = lerp_angle(rotation.y, atan2(-to.x, -to.z), 1.0 - exp(-6.0 * delta))
 		if _wait_t <= 0.0:
 			mood = Mood.WALK
+			_look = null
 		Models.play_move(_anim, false)
 		move_and_slide()
 		return
@@ -128,27 +155,29 @@ func _physics_process(delta: float) -> void:
 				var dir := to.normalized()
 				velocity.x = dir.x * 6.1
 				velocity.z = dir.z * 6.1
-				rotation.y = lerp_angle(rotation.y, atan2(-dir.x, -dir.z), 10.0 * delta)
+				rotation.y = lerp_angle(rotation.y, atan2(-dir.x, -dir.z), 1.0 - exp(-10.0 * delta))
 		Models.play_move(_anim, true, true)
 		move_and_slide()
 		return
 
-	if path.size() == 0:
+	if not _has_flee_target and path.size() == 0:
 		return
-	var dest: Vector3 = path[path_i % path.size()]
+	var dest: Vector3 = _flee_target if (mood == Mood.FLEE and _has_flee_target) else path[path_i % path.size()]
 	var to := dest - global_position
 	to.y = 0.0
 	if to.length() < 1.1:
-		path_i = (path_i + 1) % path.size()
-		if mood == Mood.FLEE and path_i == 0:
+		if mood == Mood.FLEE and _has_flee_target:
+			_has_flee_target = false
 			mood = Mood.WALK
-		elif mood == Mood.WALK and randf() < 0.34:
-			mood = Mood.WAIT
-			_wait_t = randf_range(0.8, 2.6)
-			var ply := get_tree().get_first_node_in_group("player") as Node3D
-			if ply and global_position.distance_to(ply.global_position) < 8.0:
-				mood = Mood.LOOK
-				_look = ply
+		elif path.size() > 0:
+			path_i = (path_i + 1) % path.size()
+			if mood == Mood.WALK and randf() < 0.34:
+				mood = Mood.WAIT
+				_wait_t = randf_range(0.8, 2.6)
+				var ply := get_tree().get_first_node_in_group("player") as Node3D
+				if ply and global_position.distance_to(ply.global_position) < 8.0:
+					mood = Mood.LOOK
+					_look = ply
 	var fwd := to.normalized() if to.length() > 0.05 else Vector3.ZERO
 	# Don't walk into traffic.
 	var space := get_world_3d().direct_space_state

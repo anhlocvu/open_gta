@@ -27,7 +27,7 @@ func _ready() -> void:
 		_pano.panorama = _day_hdri
 	var sky := Sky.new()
 	sky.sky_material = _pano
-	sky.process_mode = Sky.PROCESS_MODE_REALTIME
+	sky.process_mode = Sky.PROCESS_MODE_QUALITY
 	_env.background_mode = Environment.BG_SKY
 	_env.sky = sky
 	_env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY

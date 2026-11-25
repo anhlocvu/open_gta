@@ -28,10 +28,49 @@ var _base_cd := 0.0
 var _firing := false
 var beacon: MeshInstance3D
 var last_seen_mark: Marker3D
+const SETTINGS_PATH := "user://open_world_settings.cfg"
+
 var roads: RoadGraph
 var shot_effects: ShotEffects
-var matches: MatchManager
 var sfx: CityAudio
+var a11y: A11yGameplayController
+var master_volume := 1.0
+var paused := false
+var _banner_seq := 0
+var _settings := ConfigFile.new()
+
+
+func _flash_banner(text: String, duration := 1.5) -> void:
+	_banner_seq += 1
+	var seq := _banner_seq
+	hud.set_banner(text)
+	if duration > 0.0 and is_inside_tree():
+		get_tree().create_timer(duration).timeout.connect(func() -> void:
+			if is_instance_valid(self) and is_instance_valid(hud) and _banner_seq == seq:
+				hud.set_banner(""))
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT:
+		_firing = false
+
+
+func tracked_node() -> Node3D:
+	return _tracked()
+
+
+func is_gameplay_active() -> bool:
+	return not paused and phase not in [Phase.TITLE, Phase.BUSTED, Phase.WASTED]
+
+
+func objective_info() -> Dictionary:
+	var dest := radar_objective()
+	match phase:
+		Phase.STEAL: return {"position": dest, "label": "Steal the amber coupe"}
+		Phase.HEAT: return {"position": Vector3.ZERO, "label": "Lose the police units"}
+		Phase.DELIVER: return {"position": dest, "label": "Deliver coupe to the warehouse"}
+		Phase.FREE: return {"position": dest, "label": "Explore Harbor District or collect packages"}
+	return {"position": dest, "label": "Current Objective"}
 
 
 func get_wanted() -> int:
@@ -39,11 +78,6 @@ func get_wanted() -> int:
 
 
 func radar_objective() -> Vector3:
-	if matches and matches.competitive():
-		if matches.zone:
-			return matches.zone.center
-		var carried := matches.rules.carried_by(0)
-		return matches.arena.bases[1] if carried else matches.arena.bases[0]
 	match phase:
 		Phase.STEAL:
 			return coupe.global_position if coupe else Vector3.ZERO
@@ -53,6 +87,19 @@ func radar_objective() -> Vector3:
 			return Vector3.ZERO
 		_:
 			if packages_left > 0:
+				var best_pos := Vector3.ZERO
+				var best_dist := INF
+				var origin := _tracked().global_position if player else Vector3.ZERO
+				if is_inside_tree():
+					for node in get_tree().get_nodes_in_group("world_pickups"):
+						var pk := node as WorldPickup
+						if pk and not pk.taken and pk.kind == WorldPickup.Kind.PACKAGE:
+							var d := origin.distance_to(pk.global_position)
+							if d < best_dist:
+								best_dist = d
+								best_pos = pk.global_position
+				if best_pos != Vector3.ZERO:
+					return best_pos
 				return city.package_spawns[0] if city.package_spawns.size() else Vector3.ZERO
 			return Vector3.ZERO
 
@@ -123,21 +170,183 @@ func _ready() -> void:
 	_spawn_peds()
 	_spawn_pickups()
 	_spawn_base_units()
+	A11ySpatialAudio.ensure_audio_buses()
 	sfx = CityAudio.new()
 	add_child(sfx)
 	_make_beacon()
 	clock.apply(false)
-	hud.set_time_of_day(false)
 	_sync_hud()
-	matches = MatchManager.new()
-	matches.game = self
-	add_child(matches)
-	matches.announcer.subtitle_changed.connect(hud.set_subtitle)
+	a11y = A11yGameplayController.new()
+	a11y.game = self
+	add_child(a11y)
+	player.vitality.damaged.connect(func(amt: float) -> void:
+		if amt > 0.0 and a11y and a11y.audio:
+			a11y.audio.play_damage_taken(player.global_position, player.global_position))
+	_load_settings()
+	_set_world_active(false)
 
-func start_mode(mode: int) -> void:
-	matches.start(mode)
-	if mode == MatchRules.Mode.FREE:
-		_sync_hud()
+
+func _set_world_active(active: bool) -> void:
+	var mode := Node.PROCESS_MODE_INHERIT if active else Node.PROCESS_MODE_DISABLED
+	if city:
+		city.visible = active
+		city.process_mode = mode
+	if player:
+		player.visible = active and not player.in_vehicle
+		player.process_mode = mode
+	if camera:
+		camera.process_mode = mode
+	if beacon:
+		beacon.visible = active and radar_objective() != Vector3.ZERO
+	if is_inside_tree():
+		for grp in [&"vehicles", &"peds", &"aircraft", &"world_pickups"]:
+			for n in get_tree().get_nodes_in_group(grp):
+				if n is Node3D:
+					(n as Node3D).visible = active
+				if n is Node:
+					(n as Node).process_mode = mode
+
+func set_paused(on: bool) -> void:
+	if phase == Phase.TITLE:
+		paused = false
+		return
+	paused = on
+	_firing = false
+	var mode := Node.PROCESS_MODE_DISABLED if on else Node.PROCESS_MODE_INHERIT
+	if is_inside_tree():
+		for grp in [&"vehicles", &"peds", &"aircraft"]:
+			for n in get_tree().get_nodes_in_group(grp):
+				if n is Node:
+					(n as Node).process_mode = mode
+	if player:
+		player.locked = on or (phase in [Phase.BUSTED, Phase.WASTED])
+		if on and a11y:
+			a11y.nav.stop_autowalk(player)
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if (on or phase in [Phase.TITLE, Phase.BUSTED, Phase.WASTED] or DisplayServer.is_touchscreen_available()) else Input.MOUSE_MODE_CAPTURED
+	hud.show_pause(on)
+
+func toggle_pause() -> void:
+	set_paused(not paused)
+
+func set_master_volume(value: float) -> void:
+	master_volume = clampf(value, 0.0, 1.0)
+	AudioServer.set_bus_volume_db(AudioServer.get_bus_index("Master"), linear_to_db(maxf(master_volume, 0.0001)))
+
+static func _safe_float(val: Variant, fallback: float, min_v: float, max_v: float) -> float:
+	if val is int or val is float:
+		var f := float(val)
+		if is_finite(f):
+			return clampf(f, min_v, max_v)
+	return fallback
+
+
+static func _safe_int(val: Variant, fallback: int, min_v: int, max_v: int) -> int:
+	if val is int or val is float:
+		var f := float(val)
+		if is_finite(f):
+			return clampi(int(f), min_v, max_v)
+	return fallback
+
+
+static func _serialize_event(ev: InputEvent) -> Dictionary:
+	if ev is InputEventKey:
+		var k := ev as InputEventKey
+		return {
+			"kind": "key",
+			"code": int(k.physical_keycode if k.physical_keycode != KEY_NONE else k.keycode),
+			"shift": k.shift_pressed,
+			"ctrl": k.ctrl_pressed,
+			"alt": k.alt_pressed,
+			"meta": k.meta_pressed,
+		}
+	if ev is InputEventMouseButton:
+		var m := ev as InputEventMouseButton
+		return {"kind": "mouse", "button": int(m.button_index)}
+	return {}
+
+
+static func _deserialize_event(raw: Variant) -> InputEvent:
+	if raw is Dictionary:
+		var d := raw as Dictionary
+		var kind := str(d.get("kind", ""))
+		if kind == "key":
+			var code := _safe_int(d.get("code"), 0, 1, 0x7FFFFFFF)
+			if code == 0 or code in [KEY_INSERT, KEY_CAPSLOCK]:
+				return null
+			var kev := InputEventKey.new()
+			kev.device = -1
+			kev.physical_keycode = code
+			kev.shift_pressed = bool(d.get("shift", false))
+			kev.ctrl_pressed = bool(d.get("ctrl", false))
+			kev.alt_pressed = bool(d.get("alt", false))
+			kev.meta_pressed = bool(d.get("meta", false))
+			return kev
+		if kind == "mouse":
+			var btn := _safe_int(d.get("button"), 0, 1, 9)
+			if btn <= 0:
+				return null
+			var mev := InputEventMouseButton.new()
+			mev.device = -1
+			mev.button_index = btn
+			return mev
+	elif raw is InputEvent and raw.get_script() == null:
+		if raw is InputEventKey and (raw.keycode in [KEY_INSERT, KEY_CAPSLOCK] or raw.physical_keycode in [KEY_INSERT, KEY_CAPSLOCK]):
+			return null
+		var clone := raw.duplicate() as InputEvent
+		clone.device = -1
+		return clone
+	return null
+
+
+func _load_settings() -> void:
+	var speech := A11yUIHelper.speech()
+	if speech:
+		speech.load_settings(SETTINGS_PATH)
+	if _settings.load(SETTINGS_PATH) != OK:
+		return
+	clock.set_quality(_safe_int(_settings.get_value("settings", "quality", 0), 0, 0, GraphicsProfile.Quality.HIGH))
+	camera.mouse_sens = _safe_float(_settings.get_value("settings", "mouse_sens", 0.0032), 0.0032, 0.0005, 0.02)
+	camera.ads_sensitivity = _safe_float(_settings.get_value("settings", "ads_sens", 0.55), 0.55, 0.1, 1.5)
+	set_master_volume(_safe_float(_settings.get_value("settings", "master_volume", 1.0), 1.0, 0.0, 1.0))
+	var fp_val: Variant = _settings.get_value("settings", "first_person", false)
+	camera.set_first_person(fp_val if fp_val is bool else false)
+	camera.first_person_fov = _safe_float(_settings.get_value("settings", "fov", 86.0), 86.0, 70.0, 110.0)
+	if not _settings.has_section("bindings"):
+		return
+	for action in _settings.get_section_keys("bindings"):
+		if InputMap.has_action(action):
+			var raw_events: Variant = _settings.get_value("bindings", action)
+			if not (raw_events is Array):
+				continue
+			var valid_events: Array[InputEvent] = []
+			for raw_ev in raw_events:
+				var ev := _deserialize_event(raw_ev)
+				if ev != null:
+					valid_events.append(ev)
+			if valid_events.is_empty():
+				continue
+			InputMap.action_erase_events(action)
+			for ev in valid_events:
+				InputMap.action_add_event(action, ev)
+
+func save_settings() -> void:
+	_settings.set_value("settings", "quality", clock.quality)
+	_settings.set_value("settings", "mouse_sens", camera.mouse_sens)
+	_settings.set_value("settings", "ads_sens", camera.ads_sensitivity)
+	_settings.set_value("settings", "master_volume", master_volume)
+	_settings.set_value("settings", "first_person", camera.first_person)
+	_settings.set_value("settings", "fov", camera.first_person_fov)
+	for action in GameHUD.ACTION_LABELS:
+		var encoded: Array[Dictionary] = []
+		for ev in InputMap.action_get_events(action):
+			var item := _serialize_event(ev)
+			if not item.is_empty():
+				encoded.append(item)
+		_settings.set_value("bindings", action, encoded)
+	var speech := A11yUIHelper.speech()
+	if speech:
+		speech.settings.save_to_config(_settings)
+	_settings.save(SETTINGS_PATH)
 
 
 func _make_cop(pos: Vector3, idx: int) -> Vehicle:
@@ -191,85 +400,373 @@ func _spawn_base_units() -> void:
 
 
 func _spawn_pickups() -> void:
-	for pos in city.package_spawns:
+	for i in city.package_spawns.size():
 		var pk := WorldPickup.new()
+		pk.save_key = "pkg:%d" % i
 		add_child(pk)
-		pk.setup(WorldPickup.Kind.PACKAGE, pos, 180)
-	for pos in city.health_spawns:
+		pk.setup(WorldPickup.Kind.PACKAGE, city.package_spawns[i], 180)
+	for i in city.health_spawns.size():
 		var hp := WorldPickup.new()
+		hp.save_key = "hp:%d" % i
 		add_child(hp)
-		hp.setup(WorldPickup.Kind.HEALTH, pos, 40)
+		hp.setup(WorldPickup.Kind.HEALTH, city.health_spawns[i], 40)
+
+
+func begin_saved() -> void:
+	if phase != Phase.TITLE:
+		return
+	begin()
+	if not load_saved_game():
+		A11yUIHelper.say("No valid saved game found. Starting new game.", true, 2, &"a11y_save")
+
+
+func return_to_main_menu() -> void:
+	if phase in [Phase.STEAL, Phase.HEAT, Phase.DELIVER, Phase.FREE]:
+		save_current_game()
+	set_paused(false)
+	if is_inside_tree():
+		get_tree().reload_current_scene()
+
+
+func district_name(pos: Vector3) -> String:
+	if city == null:
+		return "Harbor District"
+	if city.on_base(pos) or city.near_base_gate(pos):
+		return "Army Base"
+	if city.st_zs.size() > 0 and pos.z < city.st_zs[0] - 6.0:
+		return "Harbor Pier"
+	if pos.distance_to(city.hospital_pos) < 42.0:
+		return "Hospital District"
+	if pos.distance_to(city.station_pos) < 42.0:
+		return "Police Precinct"
+	if pos.distance_to(city.spray_pos) < 42.0:
+		return "West Docks"
+	if city.st_zs.size() > 3 and pos.z < city.st_zs[3]:
+		return "Warehouse District"
+	if city.st_zs.size() > 10 and absf(pos.x) < 110.0 and pos.z < city.st_zs[10]:
+		return "Downtown"
+	return "North Harbor"
+
+
+func serialize_state() -> Dictionary:
+	var alive_pickups := {}
+	if is_inside_tree():
+		for node in get_tree().get_nodes_in_group("world_pickups"):
+			var pk := node as WorldPickup
+			if pk and is_instance_valid(pk) and not pk.taken and pk.save_key != "":
+				alive_pickups[pk.save_key] = true
+	var taken_pickups: Array[String] = []
+	for i in city.package_spawns.size():
+		var k := "pkg:%d" % i
+		if not alive_pickups.has(k):
+			taken_pickups.append(k)
+	for i in city.health_spawns.size():
+		var k := "hp:%d" % i
+		if not alive_pickups.has(k):
+			taken_pickups.append(k)
+	var crates_arr: Array = []
+	for pos in _crate_taken:
+		crates_arr.append(SaveManager.vec3_to_array(pos))
+	var ammo_dict := {}
+	for k in player.ammo:
+		ammo_dict[str(k)] = int(player.ammo[k])
+	var mag_dict := {}
+	for k in player.magazines:
+		mag_dict[str(k)] = int(player.magazines[k])
+	var owned_arr: Array[int] = []
+	for w in player.owned_weapons:
+		owned_arr.append(int(w))
+	var save_phase := int(phase)
+	if save_phase in [Phase.TITLE, Phase.BUSTED, Phase.WASTED]:
+		save_phase = Phase.FREE if _delivered else (Phase.DELIVER if _stolen else Phase.STEAL)
+	var tracked_pos := _tracked().global_position
+	return {
+		"phase": save_phase,
+		"money": money,
+		"packages_left": packages_left,
+		"stolen": _stolen,
+		"delivered": _delivered,
+		"taken_pickups": taken_pickups,
+		"crate_taken": crates_arr,
+		"wanted": {
+			"stars": heat.stars if heat else 0,
+			"heat": heat.heat if heat else 0.0,
+			"last_crime": heat.last_crime if heat else "",
+		},
+		"player": {
+			"pos": SaveManager.vec3_to_array(tracked_pos),
+			"rot_y": player.rotation.y,
+			"health": player.health,
+			"stamina": player.stamina,
+			"armor": player.vitality.armor,
+			"armor_plates": player.armor_plates,
+			"crouched": player.crouched,
+			"weapon": int(player.weapon),
+			"owned_weapons": owned_arr,
+			"ammo": ammo_dict,
+			"magazines": mag_dict,
+			"in_coupe": active_vehicle == coupe,
+		},
+		"camera": {
+			"yaw": camera.yaw,
+			"pitch": camera.pitch,
+			"first_person": camera.first_person,
+			"shoulder": camera.shoulder,
+		},
+		"coupe": {
+			"pos": SaveManager.vec3_to_array(coupe.global_position),
+			"rot_y": coupe.rotation.y,
+			"hp": coupe.hp,
+			"stolen": coupe.stolen,
+			"wrecked": coupe.wrecked,
+		} if coupe else {},
+	}
+
+
+func apply_saved_state(data: Dictionary) -> bool:
+	if data.is_empty() or player == null or city == null:
+		return false
+	if active_aircraft:
+		active_aircraft.occupied = false
+		active_aircraft = null
+	if active_vehicle:
+		var old_v := active_vehicle
+		old_v.occupied = false
+		if old_v.kind in [Vehicle.Kind.COP, Vehicle.Kind.CIVILIAN]:
+			old_v.ai_enabled = true
+		active_vehicle = null
+	player.in_vehicle = false
+	player.set_hidden(false)
+	camera.follow = player
+	camera.set_vehicle_mode(false)
+	camera.set_aircraft_mode(false)
+	touch.set_driving(false)
+
+	money = _safe_int(data.get("money"), 420, 0, 999999999)
+	_stolen = bool(data.get("stolen", false))
+	_delivered = bool(data.get("delivered", false))
+	packages_left = _safe_int(data.get("packages_left"), city.package_spawns.size(), 0, city.package_spawns.size())
+	phase = _safe_int(data.get("phase"), Phase.STEAL, Phase.STEAL, Phase.FREE) as Phase
+
+	_crate_taken.clear()
+	var crates_raw: Variant = data.get("crate_taken", [])
+	if crates_raw is Array:
+		for item in crates_raw:
+			_crate_taken.append(SaveManager.array_to_vec3(item))
+
+	var taken_map := {}
+	var taken_raw: Variant = data.get("taken_pickups", [])
+	if taken_raw is Array:
+		for k in taken_raw:
+			taken_map[str(k)] = true
+	if is_inside_tree():
+		for node in get_tree().get_nodes_in_group("world_pickups"):
+			var old_pk := node as WorldPickup
+			if old_pk:
+				old_pk.taken = true
+			node.remove_from_group("world_pickups")
+			node.queue_free()
+	for i in city.package_spawns.size():
+		var key := "pkg:%d" % i
+		if not taken_map.has(key):
+			var pk := WorldPickup.new()
+			pk.save_key = key
+			add_child(pk)
+			pk.setup(WorldPickup.Kind.PACKAGE, city.package_spawns[i], 180)
+	for i in city.health_spawns.size():
+		var key := "hp:%d" % i
+		if not taken_map.has(key):
+			var hp := WorldPickup.new()
+			hp.save_key = key
+			add_child(hp)
+			hp.setup(WorldPickup.Kind.HEALTH, city.health_spawns[i], 40)
+
+	var pdata: Dictionary = data.get("player", {}) if data.get("player") is Dictionary else {}
+	player.reset_combat()
+	player.global_position = SaveManager.array_to_vec3(pdata.get("pos"), city.player_spawn)
+	player.rotation.y = _safe_float(pdata.get("rot_y"), 0.0, -TAU * 4.0, TAU * 4.0)
+	player.health = _safe_float(pdata.get("health"), 100.0, 1.0, 100.0)
+	player.stamina = _safe_float(pdata.get("stamina"), 100.0, 0.0, 100.0)
+	player.vitality.armor = _safe_float(pdata.get("armor"), 0.0, 0.0, 150.0)
+	player.armor_plates = _safe_int(pdata.get("armor_plates"), 0, 0, 12)
+	player.set_crouched(bool(pdata.get("crouched", false)))
+	player.owned_weapons.clear()
+	var owned_raw: Variant = pdata.get("owned_weapons", [])
+	if owned_raw is Array:
+		for wid in owned_raw:
+			var id_int := _safe_int(wid, 0, 0, 4)
+			if id_int > 0 and not player.owned_weapons.has(id_int):
+				player.owned_weapons.append(id_int)
+	player.ammo = {1: 0, 2: 0, 3: 0, 4: 0}
+	var ammo_raw: Variant = pdata.get("ammo", {})
+	if ammo_raw is Dictionary:
+		for k in ammo_raw:
+			var wkey := str(k).to_int() if str(k).is_valid_int() else 0
+			if wkey in [1, 2, 3, 4]:
+				player.ammo[wkey] = _safe_int(ammo_raw[k], 0, 0, 9999)
+	player.magazines = {}
+	var mag_raw: Variant = pdata.get("magazines", {})
+	if mag_raw is Dictionary:
+		for k in mag_raw:
+			var wkey := str(k).to_int() if str(k).is_valid_int() else 0
+			if wkey in [1, 2, 3, 4]:
+				player.magazines[wkey] = _safe_int(mag_raw[k], 0, 0, 200)
+	var saved_w := _safe_int(pdata.get("weapon"), Arsenal.Id.NONE, Arsenal.Id.NONE, Arsenal.Id.SHOTGUN)
+	player.weapon = saved_w if (saved_w == Arsenal.Id.NONE or player.owned_weapons.has(saved_w)) else Arsenal.Id.NONE
+
+	var cdata: Dictionary = data.get("coupe", {}) if data.get("coupe") is Dictionary else {}
+	if coupe and not cdata.is_empty():
+		coupe.global_position = SaveManager.array_to_vec3(cdata.get("pos"), city.coupe_spawn)
+		coupe.rotation.y = _safe_float(cdata.get("rot_y"), city.coupe_facing, -TAU * 4.0, TAU * 4.0)
+		coupe.speed = 0.0
+		coupe.hp = _safe_float(cdata.get("hp"), 100.0, 0.0, 100.0)
+		coupe.stolen = bool(cdata.get("stolen", _stolen))
+		coupe.wrecked = bool(cdata.get("wrecked", false))
+
+	var wdata: Dictionary = data.get("wanted", {}) if data.get("wanted") is Dictionary else {}
+	if heat:
+		heat.clear()
+		heat.heat = _safe_float(wdata.get("heat"), 0.0, 0.0, 100.0)
+		heat.stars = _safe_int(wdata.get("stars"), 0, 0, WantedSystem.MAX_STARS)
+		heat.last_crime = str(wdata.get("last_crime", ""))
+		_last_wanted = heat.stars
+		hud.set_crime(heat.label() if heat.stars > 0 else "")
+
+	var cam_data: Dictionary = data.get("camera", {}) if data.get("camera") is Dictionary else {}
+	if camera:
+		camera.yaw = _safe_float(cam_data.get("yaw"), camera.yaw, -TAU * 4.0, TAU * 4.0)
+		camera.pitch = _safe_float(cam_data.get("pitch"), camera.pitch, -1.5, 1.5)
+		camera.set_first_person(bool(cam_data.get("first_person", camera.first_person)))
+		camera.shoulder = -1.0 if _safe_float(cam_data.get("shoulder"), 1.0, -1.0, 1.0) < 0.0 else 1.0
+
+	if bool(pdata.get("in_coupe", false)) and coupe and not coupe.wrecked:
+		active_vehicle = coupe
+		coupe.occupied = true
+		coupe.ai_enabled = false
+		player.in_vehicle = true
+		player.set_hidden(true)
+		camera.follow = coupe
+		camera.set_vehicle_mode(true)
+		touch.set_driving(true)
+
+	if a11y:
+		a11y.reset_state()
+		a11y.sync_wanted(heat.stars if heat else 0)
+	_sync_hud()
+	return true
+
+
+func save_current_game(path := SaveManager.DEFAULT_PATH) -> bool:
+	if phase == Phase.TITLE:
+		return false
+	var ok := SaveManager.save_data(serialize_state(), path)
+	if ok:
+		_flash_banner("GAME SAVED", 1.4)
+		A11yUIHelper.say("Game saved.", true, 2, &"a11y_save", true)
+	return ok
+
+
+func load_saved_game(path := SaveManager.DEFAULT_PATH) -> bool:
+	var data := SaveManager.load_data(path)
+	if data.is_empty():
+		return false
+	if phase == Phase.TITLE:
+		begin()
+	var ok := apply_saved_state(data)
+	if ok:
+		set_paused(false)
+		_flash_banner("GAME LOADED", 1.4)
+		A11yUIHelper.say("Saved game loaded. Cash %d dollars." % money, true, 2, &"a11y_save", true)
+	return ok
 
 
 func begin() -> void:
 	if phase != Phase.TITLE:
 		return
 	phase = Phase.STEAL
+	_set_world_active(true)
 	player.locked = false
 	touch.visible = DisplayServer.is_touchscreen_available()
 	hud.show_start(false)
 	if not DisplayServer.is_touchscreen_available():
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	_sync_hud()
+	A11yUIHelper.say("Free Chaos started. Objective: Steal the amber coupe. Press Z for status, B and Period to scan radar, Slash for help.", true, 3, &"a11y_ow_start")
+
+
+func _action_pressed(event: InputEvent, action: StringName) -> bool:
+	return A11yUIHelper.action_pressed(event, action)
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if matches and phase != Phase.TITLE and event.is_action_pressed("return_menu"):
-		matches.return_menu()
+	if hud.capture_binding(event):
 		return
-	if matches and matches.competitive():
-		if event.is_action_pressed("drop_objective"):
-			matches.rules.drop(0)
-	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_F6:
+	if a11y and a11y.handle_input(event):
+		get_viewport().set_input_as_handled()
+		return
+	if phase != Phase.TITLE and ((not paused and _action_pressed(event, &"return_menu")) or (event is InputEventKey and event.pressed and not event.echo and (event.keycode == KEY_ESCAPE or event.physical_keycode == KEY_ESCAPE))):
+		toggle_pause()
+		get_viewport().set_input_as_handled()
+		return
+	if paused:
+		return
+	if _action_pressed(event, &"graphics_profile"):
 		clock.set_quality((clock.quality + 1) % 3)
-		hud.set_banner("GRAPHICS: " + GraphicsProfile.label(clock.quality))
-		get_tree().create_timer(2.4).timeout.connect(func() -> void: hud.set_banner(""))
-	if event is InputEventKey and event.pressed and event.keycode == KEY_N:
-		clock.toggle()
-		hud.set_time_of_day(clock.is_night)
+		var q_label := GraphicsProfile.label(clock.quality)
+		_flash_banner("GRAPHICS: " + q_label, 2.4)
 	if phase == Phase.TITLE:
-		if event is InputEventKey and event.pressed and event.keycode == KEY_SPACE:
+		if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_SPACE and get_viewport().gui_get_focus_owner() == null:
 			begin()
+		return
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_R and phase in [Phase.BUSTED, Phase.WASTED]:
+		_respawn()
+		return
+	if player.locked or phase in [Phase.BUSTED, Phase.WASTED]:
 		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		camera.add_look(event.relative)
-	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	if event is InputEventMouseButton and event.pressed and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
-		if not DisplayServer.is_touchscreen_available() and phase not in [Phase.TITLE, Phase.BUSTED, Phase.WASTED]:
+		if not DisplayServer.is_touchscreen_available():
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-	if event.is_action_pressed("interact"):
+	if _action_pressed(event, &"camera_view"):
+		camera.set_first_person(not camera.first_person)
+		A11yUIHelper.say("First person view" if camera.first_person else "Third person view", true, 2, &"a11y_view", true)
+	if _action_pressed(event, &"interact"):
 		_try_interact()
-	if event.is_action_pressed("reload") and phase not in [Phase.BUSTED, Phase.WASTED]:
+	if _action_pressed(event, &"reload"):
 		player.request_reload()
-	if event.is_action_pressed("swap_shoulder") and not player.in_vehicle:
+	if _action_pressed(event, &"swap_shoulder") and not player.in_vehicle:
 		camera.shoulder *= -1.0
-	if event.is_action_pressed("jump") or (event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_SPACE):
+	if _action_pressed(event, &"jump"):
 		player.request_jump()
-	if event is InputEventKey and event.pressed and event.keycode == KEY_F:
+	if _action_pressed(event, &"melee"):
 		_try_punch()
-	if event is InputEventKey and event.pressed and event.keycode == KEY_R and phase in [Phase.BUSTED, Phase.WASTED]:
-		_respawn()
-	if event.is_action_pressed("fire"):
-		_firing = true
-		_try_fire()
+	if _action_pressed(event, &"fire"):
+		if player.weapon == Arsenal.Id.NONE:
+			_try_punch()
+		else:
+			_firing = true
+			_try_fire()
 	if event.is_action_released("fire"):
 		_firing = false
-	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_WHEEL_UP:
+	if _action_pressed(event, &"cycle_weapon_up"):
 		player.cycle_weapon(1)
-	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+	if _action_pressed(event, &"cycle_weapon_down"):
 		player.cycle_weapon(-1)
-	if event is InputEventKey and event.pressed:
-		match event.keycode:
-			KEY_1:
-				_weapon_or_buy(Arsenal.Id.PISTOL)
-			KEY_2:
-				_weapon_or_buy(Arsenal.Id.SMG)
-			KEY_3:
-				_weapon_or_buy(Arsenal.Id.RIFLE)
-			KEY_4:
-				if city.near_gun_shop(player.global_position) and not player.in_vehicle:
-					_buy_ammo()
+	if _action_pressed(event, &"weapon_holster"):
+		player.select_weapon(Arsenal.Id.NONE)
+	if _action_pressed(event, &"weapon_1"):
+		_weapon_or_buy(Arsenal.Id.PISTOL)
+	elif _action_pressed(event, &"weapon_2"):
+		_weapon_or_buy(Arsenal.Id.SMG)
+	elif _action_pressed(event, &"weapon_3"):
+		_weapon_or_buy(Arsenal.Id.RIFLE)
+	elif _action_pressed(event, &"weapon_4"):
+		_weapon_or_buy(Arsenal.Id.SHOTGUN)
+	elif event is InputEventKey and event.pressed and not event.echo and (event.keycode == KEY_4 or event.physical_keycode == KEY_4):
+		if city.near_gun_shop(player.global_position) and not player.in_vehicle:
+			player.cancel_plate()
+			_buy_ammo()
 
 
 func _process(delta: float) -> void:
@@ -296,13 +793,8 @@ func _process(delta: float) -> void:
 	if touch.firing and not touch.was_firing:
 		_try_fire()
 	touch.was_firing = touch.firing
-	if matches and matches.competitive():
-		if matches.rules.state == MatchRules.State.ACTIVE and (_firing or touch.firing) and player.weapon != Arsenal.Id.NONE and Arsenal.data(player.weapon).automatic:
-			_try_fire()
-		if sfx:
-			sfx.tick(delta, null, null, 0)
+	if paused:
 		return
-
 	if phase in [Phase.BUSTED, Phase.WASTED]:
 		_end_timer += delta
 		if sfx:
@@ -324,13 +816,15 @@ func _process(delta: float) -> void:
 	_update_base(delta)
 	if (_firing or touch.firing) and player.weapon != Arsenal.Id.NONE and Arsenal.data(player.weapon).automatic:
 		_try_fire()
+	if sfx and heat:
+		sfx.tick(delta, player, active_vehicle, heat.just_ranked)
 	_sync_hud()
+	if heat:
+		heat.just_ranked = 0
 
 
 func _try_interact() -> void:
-	if player.locked:
-		return
-	if matches and matches.competitive() and matches.interact_player():
+	if player.locked or paused:
 		return
 	if active_aircraft:
 		_exit_aircraft()
@@ -357,13 +851,17 @@ func _try_punch() -> void:
 		return
 	var officer := player.try_punch_officer()
 	if officer:
+		if a11y and a11y.audio: a11y.audio.play_punch(officer.global_position, true)
 		_report("assault_cop", officer.global_position)
 		_scare_nearby(officer.global_position)
 		return
 	var hit := player.try_punch()
 	if hit:
+		if a11y and a11y.audio: a11y.audio.play_punch(hit.global_position, true)
 		_scare_nearby(hit.global_position)
 		_report("assault", hit.global_position)
+	elif player._punch_cd >= 0.4:
+		if a11y and a11y.audio: a11y.audio.play_punch(player.global_position, false)
 
 
 func _nearest_enterable() -> Vehicle:
@@ -386,7 +884,7 @@ func _enter_vehicle(v: Vehicle) -> void:
 	if driver:
 		player.locked = true
 		get_tree().create_timer(0.28).timeout.connect(func() -> void:
-			if is_instance_valid(player):
+			if is_instance_valid(self) and is_instance_valid(player) and not paused and phase not in [Phase.TITLE, Phase.BUSTED, Phase.WASTED]:
 				player.locked = false
 		)
 	active_vehicle = v
@@ -403,6 +901,7 @@ func _enter_vehicle(v: Vehicle) -> void:
 		v.stolen = true
 		_report("jack_mission", v.global_position)
 		phase = Phase.HEAT
+		save_current_game()
 	elif v.kind == Vehicle.Kind.COP:
 		_report("jack_cop", v.global_position)
 	elif v.kind == Vehicle.Kind.PARKED:
@@ -411,6 +910,9 @@ func _enter_vehicle(v: Vehicle) -> void:
 		_report("trespass", v.global_position)
 	else:
 		_report("jack", v.global_position)
+	if a11y and a11y.audio:
+		a11y.audio.play_vehicle_event(&"door", v.global_position)
+	A11yUIHelper.say("Entered %s" % v.display_name, true, 2, &"a11y_vehicle")
 
 
 func _nearest_aircraft() -> Aircraft:
@@ -437,6 +939,7 @@ func _enter_aircraft(jet: Aircraft) -> void:
 	camera.set_aircraft_mode(true)
 	touch.set_driving(true)
 	_report("steal_jet", jet.global_position)
+	A11yUIHelper.say("Boarded %s" % jet.display_name, true, 2, &"a11y_vehicle")
 
 
 func _exit_aircraft() -> void:
@@ -455,18 +958,18 @@ func _exit_aircraft() -> void:
 	camera.follow = player
 	camera.set_aircraft_mode(false)
 	touch.set_driving(false)
+	A11yUIHelper.say("Exited aircraft", true, 2, &"a11y_vehicle")
 
 
 func _use_bar() -> void:
 	if money < 40:
-		hud.set_banner("BAR  ·  $40 needed")
-		get_tree().create_timer(1.4).timeout.connect(func() -> void: hud.set_banner(""))
+		_flash_banner("BAR  ·  $40 needed", 1.4)
 		return
 	money -= 40
 	player.heal(40.0)
 	player.stamina = 100.0
-	hud.set_banner("WHISKEY  -$40")
-	get_tree().create_timer(1.5).timeout.connect(func() -> void: hud.set_banner(""))
+	if a11y and a11y.audio: a11y.audio.play_shop_cue()
+	_flash_banner("WHISKEY  -$40", 1.5)
 
 
 func _try_crate() -> bool:
@@ -476,9 +979,9 @@ func _try_crate() -> bool:
 		if player.global_position.distance_to(pos) < 2.4:
 			_crate_taken.append(pos)
 			player.give_weapon(Arsenal.Id.RIFLE, 60)
+			if a11y and a11y.audio: a11y.audio.play_weapon_cue(&"pickup")
 			_report("steal_arms", pos)
-			hud.set_banner("SERVICE RIFLE")
-			get_tree().create_timer(1.6).timeout.connect(func() -> void: hud.set_banner(""))
+			_flash_banner("SERVICE RIFLE", 1.6)
 			return true
 	return false
 
@@ -497,35 +1000,38 @@ func _buy_weapon(id: int) -> void:
 		_buy_ammo()
 		return
 	if money < price:
-		hud.set_banner("$%d needed" % price)
-		get_tree().create_timer(1.3).timeout.connect(func() -> void: hud.set_banner(""))
+		_flash_banner("$%d needed" % price, 1.3)
 		return
 	money -= price
 	player.give_weapon(id)
-	hud.set_banner("%s  -$%d" % [spec["name"], price])
-	get_tree().create_timer(1.5).timeout.connect(func() -> void: hud.set_banner(""))
+	if a11y and a11y.audio: a11y.audio.play_shop_cue()
+	_flash_banner("%s  -$%d" % [spec["name"], price], 1.5)
+	save_current_game()
 
 
 func _buy_ammo() -> void:
 	if player.weapon == Arsenal.Id.NONE:
-		hud.set_banner("Buy a gun first")
-		get_tree().create_timer(1.2).timeout.connect(func() -> void: hud.set_banner(""))
+		_flash_banner("Buy a gun first", 1.2)
 		return
 	if money < Arsenal.ammo_price():
-		hud.set_banner("$80 needed")
-		get_tree().create_timer(1.2).timeout.connect(func() -> void: hud.set_banner(""))
+		_flash_banner("$80 needed", 1.2)
 		return
 	money -= Arsenal.ammo_price()
 	player.add_ammo(int(Arsenal.spec(player.weapon)["ammo"]))
-	hud.set_banner("AMMO  -$80")
-	get_tree().create_timer(1.3).timeout.connect(func() -> void: hud.set_banner(""))
+	if a11y and a11y.audio: a11y.audio.play_shop_cue()
+	_flash_banner("AMMO  -$80", 1.3)
 
 
 func _try_fire() -> void:
 	if player.locked or player.in_vehicle or phase in [Phase.TITLE, Phase.BUSTED, Phase.WASTED]:
 		return
+	if player.weapon == Arsenal.Id.NONE:
+		_try_punch()
+		return
 	var spec := player.spend_shot()
 	if spec.is_empty():
+		if a11y and player.weapon != Arsenal.Id.NONE and int(player.magazines.get(player.weapon, 0)) == 0 and player.reload_remaining <= 0.0:
+			a11y.on_empty_trigger()
 		return
 	var cam := camera.camera()
 	if cam == null:
@@ -546,17 +1052,13 @@ func _try_fire() -> void:
 	if hit:
 		end = hit.position
 		var col = hit.collider
-		if col is Player and matches and matches.competitive():
-			var height: float = hit.position.y - col.global_position.y
-			var multiplier := data.head_multiplier if height > 1.3 else (data.limb_multiplier if height < 0.6 else 1.0)
-			if matches.apply_hit(0, col, data.damage * multiplier):
-				hud.confirm_hit()
-		elif col is Pedestrian:
+		if col is Pedestrian:
 			var ped := col as Pedestrian
 			var hit_height: float = hit.position.y - ped.global_position.y
 			var region := data.head_multiplier if hit_height > 1.3 else (data.limb_multiplier if hit_height < 0.6 else 1.0)
 			ped.take_damage(data.damage, region)
 			hud.confirm_hit()
+			if a11y: a11y.on_hit_confirmed(false, false, region > 1.1)
 			if ped.is_officer:
 				_report("shoot_cop", ped.global_position)
 			else:
@@ -564,17 +1066,20 @@ func _try_fire() -> void:
 		elif col is Vehicle:
 			var v := col as Vehicle
 			v.apply_damage(float(spec["dmg"]))
+			if a11y and a11y.audio: a11y.audio.play_bullet_impact(end)
 			if v.kind == Vehicle.Kind.COP:
 				_report("shoot_cop", v.global_position)
 			else:
 				_report("gunfire", v.global_position)
 		else:
+			if a11y and a11y.audio: a11y.audio.play_bullet_impact(end)
 			_report("gunfire", end)
 	else:
 		_report("gunfire", player.global_position)
 	# Every fired shot is the warning: hits and misses produce one witness reaction.
 	_scare_nearby(player.global_position)
 	_tracer(muzzle, end)
+	if a11y: a11y.on_weapon_fired(0, muzzle, false)
 	camera.kick(data)
 	camera.add_shake(0.012)
 
@@ -609,11 +1114,12 @@ func _exit_vehicle() -> void:
 	camera.follow = player
 	camera.set_vehicle_mode(false)
 	touch.set_driving(false)
+	if a11y and a11y.audio:
+		a11y.audio.play_vehicle_event(&"door", v.global_position)
+	A11yUIHelper.say("Exited vehicle", true, 2, &"a11y_vehicle")
 
 
 func _report(crime: String, pos: Vector3) -> void:
-	if matches and matches.competitive():
-		return
 	var added := heat.report(crime, _witnessed(pos))
 	if added > 0:
 		hud.set_crime(heat.label())
@@ -684,6 +1190,8 @@ func _cops_can_see() -> bool:
 	var target := _tracked()
 	var world := get_world_3d()
 	for cop in cops:
+		if not is_instance_valid(cop):
+			continue
 		var d := cop.global_position.distance_to(target.global_position)
 		if d > 52.0:
 			continue
@@ -713,11 +1221,12 @@ func _update_cops() -> void:
 		_make_cop(spawn, cops.size())
 	var target := _tracked()
 	last_seen_mark.global_position = heat.last_seen
-	for cop in cops:
-		if cop.occupied:
+	for idx in cops.size():
+		var cop := cops[idx]
+		if not is_instance_valid(cop) or cop.occupied:
 			continue
 		cop.ai_enabled = true
-		cop.chase_slot = cops.find(cop)
+		cop.chase_slot = idx
 		if heat.stars <= 0:
 			cop.chase_target = null
 		elif heat.in_sight:
@@ -759,8 +1268,9 @@ func _update_mission() -> void:
 		_delivered = true
 		money += 800
 		player.locked = false
-		hud.set_banner("DROP COMPLETE  +$800")
-		get_tree().create_timer(2.4).timeout.connect(func() -> void: hud.set_banner(""))
+		if sfx: sfx.play_stinger()
+		_flash_banner("DROP COMPLETE  +$800", 2.4)
+		save_current_game()
 
 
 func _check_services() -> void:
@@ -772,8 +1282,8 @@ func _check_services() -> void:
 			heat.clear()
 			active_vehicle.repair()
 			_spray_cd = 4.0
-			hud.set_banner("RESPRAY  -$200")
-			get_tree().create_timer(1.8).timeout.connect(func() -> void: hud.set_banner(""))
+			if a11y and a11y.audio: a11y.audio.play_shop_cue()
+			_flash_banner("RESPRAY  -$200", 1.8)
 		else:
 			hud.set_prompt("Spray shop  ·  $200 needed")
 
@@ -784,7 +1294,7 @@ func _check_busted(delta: float) -> void:
 		return
 	var close := false
 	for cop in cops:
-		if cop.global_position.distance_to(player.global_position) < 2.8:
+		if is_instance_valid(cop) and cop.global_position.distance_to(player.global_position) < 2.8:
 			close = true
 			break
 	for node in get_tree().get_nodes_in_group("foot_cops"):
@@ -823,6 +1333,7 @@ func _set_down(p: Phase, banner: String) -> void:
 	touch.set_driving(false)
 	camera.set_aircraft_mode(false)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	_banner_seq += 1
 	hud.set_banner(banner)
 	_end_timer = 0.0
 
@@ -841,37 +1352,39 @@ func _respawn() -> void:
 	camera.follow = player
 	camera.set_vehicle_mode(false)
 	phase = Phase.FREE if _delivered else (Phase.DELIVER if _stolen else Phase.STEAL)
+	_banner_seq += 1
 	hud.set_banner("")
 	if not DisplayServer.is_touchscreen_available():
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	hud.set_crime("")
+	A11yUIHelper.say("Respawned. Health restored.", true, 2, &"a11y_respawn")
 
 
 func collect_pickup(kind: int, amount: int) -> void:
+	if a11y and a11y.audio:
+		a11y.audio.play_weapon_cue(&"pickup")
 	if kind == WorldPickup.Kind.HEALTH:
 		player.heal(float(amount))
-		hud.set_banner("HEALTH")
+		_flash_banner("HEALTH", 1.4)
 	elif kind == WorldPickup.Kind.CASH:
 		money += amount
-		hud.set_banner("+$%d" % amount)
+		_flash_banner("+$%d" % amount, 1.4)
 	elif kind == WorldPickup.Kind.PACKAGE:
 		money += amount
 		packages_left = maxi(packages_left - 1, 0)
-		hud.set_banner("PACKAGE  +$%d" % amount)
-	get_tree().create_timer(1.4).timeout.connect(func() -> void: hud.set_banner(""))
+		_flash_banner("PACKAGE  +$%d" % amount, 1.4)
+		save_current_game()
 
 
 func _sync_hud() -> void:
-	if sfx and heat:
-		sfx.tick(get_process_delta_time(), player, active_vehicle, heat.just_ranked)
-	hud.set_wanted(heat.stars, heat.just_ranked)
-	heat.just_ranked = 0
+	hud.set_wanted(heat.stars if heat else 0, heat.just_ranked if heat else 0)
 	var spd := -1.0
 	if active_aircraft:
 		spd = absf(active_aircraft.speed)
 	elif active_vehicle:
 		spd = absf(active_vehicle.speed)
 	hud.set_stats(player.health, money, player.weapon_label(), spd)
+	hud.set_district(district_name(_tracked().global_position) if phase != Phase.TITLE else "")
 	hud.set_combat(player.weapon != Arsenal.Id.NONE and not player.in_vehicle and not player.locked, player.aiming, Vector2(player.velocity.x, player.velocity.z).length())
 	var near := _nearest_enterable()
 	var jet := _nearest_aircraft()
@@ -893,7 +1406,7 @@ func _sync_hud() -> void:
 			hud.set_prompt("Slow down to exit")
 	elif city.near_gun_shop(player.global_position):
 		touch.set_can_interact(false, "BUY")
-		hud.set_prompt("1 pistol $250   2 SMG $600   3 rifle $900   4 ammo $80")
+		hud.set_prompt("1 pistol $250   2 SMG $600   3 rifle $900   4 ammo $80   5 shotgun $750")
 	elif city.near_bar(player.global_position):
 		touch.set_can_interact(true, "DRINK")
 		hud.set_prompt("E  ·  WHISKEY $40  ·  heals you")
@@ -911,8 +1424,8 @@ func _sync_hud() -> void:
 		hud.set_prompt("E  ·  GET IN  " + near.display_name + "    click  ·  SHOOT")
 	else:
 		touch.set_can_interact(false, "ENTER")
-		var gun := "    click  ·  SHOOT" if player.weapon != Arsenal.Id.NONE else ""
-		hud.set_prompt(("F  ·  PUNCH" + gun) if phase != Phase.TITLE else "")
+		var gun := "    ; / click  ·  SHOOT" if player.weapon != Arsenal.Id.NONE else "    ; / F / click  ·  PUNCH"
+		hud.set_prompt((gun.strip_edges()) if phase != Phase.TITLE else "")
 
 	match phase:
 		Phase.TITLE:

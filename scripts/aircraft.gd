@@ -93,17 +93,22 @@ func _physics_process(delta: float) -> void:
 	var yaw_in := 0.0
 	var pitch_in := 0.0
 	if occupied:
-		if Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_UP):
+		var mv := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
+		yaw_in = mv.x
+		throttle = -mv.y
+		if Input.is_physical_key_pressed(KEY_UP):
 			throttle += 1.0
-		if Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_DOWN):
+		if Input.is_physical_key_pressed(KEY_DOWN):
 			throttle -= 1.0
-		if Input.is_physical_key_pressed(KEY_A) or Input.is_physical_key_pressed(KEY_LEFT):
+		if Input.is_physical_key_pressed(KEY_LEFT):
 			yaw_in -= 1.0
-		if Input.is_physical_key_pressed(KEY_D) or Input.is_physical_key_pressed(KEY_RIGHT):
+		if Input.is_physical_key_pressed(KEY_RIGHT):
 			yaw_in += 1.0
+		yaw_in = clampf(yaw_in, -1.0, 1.0)
+		throttle = clampf(throttle, -1.0, 1.0)
 		var touch := get_tree().get_first_node_in_group("touch") as TouchControls
 		if touch:
-			yaw_in += touch.move.x
+			yaw_in = clampf(yaw_in + touch.move.x, -1.0, 1.0)
 			if touch.gas:
 				throttle += 1.0
 			if touch.brake:
@@ -111,12 +116,12 @@ func _physics_process(delta: float) -> void:
 		var cam := get_tree().get_first_node_in_group("camera_rig") as CameraRig
 		if cam:
 			pitch_in = clampf(-cam.pitch * 2.4, -1.0, 1.0)
-	if occupied:
 		collision_mask = 8 if (speed > 14.0 or global_position.y > 3.0) else (1 | 4 | 8)
 		speed = move_toward(speed, max_speed * clampf(throttle, -0.25, 1.0), (62.0 if throttle > 0.0 else 28.0) * delta)
 		rotate_y(-yaw_in * 1.35 * delta)
-		rotation.x = lerp_angle(rotation.x, pitch_in * 0.42, 4.0 * delta)
-		rotation.z = lerp_angle(rotation.z, -yaw_in * 0.28, 4.0 * delta)
+		var att_blend := 1.0 - exp(-4.0 * delta)
+		rotation.x = lerp_angle(rotation.x, pitch_in * 0.42, att_blend)
+		rotation.z = lerp_angle(rotation.z, -yaw_in * 0.28, att_blend)
 		var fwd := -global_transform.basis.z
 		velocity = fwd * speed
 		if speed < 12.0 and global_position.y <= 2.8:
@@ -127,9 +132,7 @@ func _physics_process(delta: float) -> void:
 				rotation.x = move_toward(rotation.x, 0.0, 2.0 * delta)
 				global_position.y = maxf(global_position.y, 0.55)
 		else:
-			velocity.y += pitch_in * 22.0 * delta
-			if throttle > 0.2:
-				velocity.y += 10.0 * delta
+			velocity.y += pitch_in * 14.0 + (4.0 if throttle > 0.2 else 0.0)
 			if global_position.y < 1.4:
 				global_position.y = 1.4
 				velocity.y = maxf(velocity.y, 4.0)
@@ -148,6 +151,9 @@ func _physics_process(delta: float) -> void:
 			global_position.y = 0.35
 	move_and_slide()
 	if get_slide_collision_count() > 0 and speed > 18.0:
+		var game := get_tree().current_scene
+		if game and game.get("a11y") and game.a11y and game.a11y.get("audio"):
+			game.a11y.audio.play_vehicle_event(&"crash", global_position, clampf(speed / 55.0, 0.3, 1.0))
 		apply_damage(speed * 0.8)
 		speed *= 0.4
 

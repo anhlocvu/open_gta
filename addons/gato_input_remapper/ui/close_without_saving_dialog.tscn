@@ -1,0 +1,73 @@
+[gd_scene format=3 uid="uid://c0q1il8rqflxw"]
+
+[ext_resource type="Script" uid="uid://ck6hh30xh50a3" path="res://addons/gato_input_remapper/ui/close_without_saving_dialog.gd" id="1_4p0ew"]
+[ext_resource type="PackedScene" uid="uid://cxhsaoc5088pf" path="res://addons/gato_input_remapper/ui/row_navigation_container.tscn" id="2_e342f"]
+[ext_resource type="AudioStream" uid="uid://c7dxc18dnx6us" path="res://modules/core_systems/dialogue_system/sounds/accept.ogg" id="3_qhuyp"]
+[ext_resource type="AudioStream" uid="uid://bqv8f3n5iao3y" path="res://modules/core_systems/dialogue_system/sounds/cancel.ogg" id="4_1bb2q"]
+
+[node name="CloseWithoutSavingDialog" type="Control" unique_id=84929324]
+visible = false
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_4p0ew")
+
+[node name="PanelContainer" type="PanelContainer" parent="." unique_id=2147035387]
+top_level = true
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -300.0
+offset_top = -261.5
+offset_right = 300.0
+offset_bottom = 261.5
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="VBoxContainer" type="VBoxContainer" parent="PanelContainer" unique_id=1432531414]
+layout_mode = 2
+
+[node name="Label" type="Label" parent="PanelContainer/VBoxContainer" unique_id=581007444]
+custom_minimum_size = Vector2(400, 0)
+layout_mode = 2
+size_flags_vertical = 3
+text = "unsaved_changes"
+horizontal_alignment = 1
+vertical_alignment = 1
+autowrap_mode = 2
+
+[node name="RowNavigationContainer" parent="PanelContainer/VBoxContainer" unique_id=1367961113 instance=ExtResource("2_e342f")]
+layout_mode = 2
+focus_neighbor_bottom = NodePath("../RowNavigationContainer2")
+
+[node name="BackButton" type="Button" parent="PanelContainer/VBoxContainer/RowNavigationContainer" unique_id=200972874]
+layout_mode = 2
+text = "unsaved_go_back"
+
+[node name="RowNavigationContainer2" parent="PanelContainer/VBoxContainer" unique_id=408430158 instance=ExtResource("2_e342f")]
+layout_mode = 2
+focus_neighbor_bottom = NodePath("../RowNavigationContainer2")
+
+[node name="SaveAndExitButton" type="Button" parent="PanelContainer/VBoxContainer/RowNavigationContainer2" unique_id=1622973675]
+layout_mode = 2
+text = "unsaved_save_changes"
+
+[node name="RowNavigationContainer3" parent="PanelContainer/VBoxContainer" unique_id=527345306 instance=ExtResource("2_e342f")]
+layout_mode = 2
+focus_neighbor_bottom = NodePath("../RowNavigationContainer2")
+
+[node name="ExitWithoutSavingButton" type="Button" parent="PanelContainer/VBoxContainer/RowNavigationContainer3" unique_id=1759807679]
+layout_mode = 2
+text = "unsaved_exit"
+
+[node name="AcceptAudioStreamPlayer" type="AudioStreamPlayer" parent="." unique_id=2141940438]
+stream = ExtResource("3_qhuyp")
+
+[node name="CancelAudioStreamPlayer" type="AudioStreamPlayer" parent="." unique_id=1882142875]
+stream = ExtResource("4_1bb2q")

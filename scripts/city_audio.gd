@@ -19,17 +19,24 @@ func _ready() -> void:
 	_foot_b = make_footstep(1)
 	_engine_loop = make_engine()
 	_stinger = make_stinger()
-	_steps = _player(_foot_a, -8.0)
-	_engine = _player(_engine_loop, -16.0)
-	_radio = _player(_stinger, -6.0)
+	_steps = _player(_foot_a, -8.0, "SFX")
+	_engine = _player(_engine_loop, -16.0, "Vehicles")
+	_radio = _player(_stinger, -6.0, "SFX")
+
+
+func play_stinger() -> void:
+	if _radio:
+		_radio.play()
 
 
 func tick(delta: float, body: Player, vehicle: Vehicle, rank_up: int) -> void:
-	if rank_up > 0:
+	if rank_up > 0 and _radio:
 		_radio.play()
 	_step_cd = maxf(_step_cd - delta, 0.0)
-	_tick_steps(body)
-	_tick_engine(vehicle)
+	if _steps:
+		_tick_steps(body)
+	if _engine:
+		_tick_engine(vehicle)
 
 
 func _tick_steps(body: Player) -> void:
@@ -58,11 +65,11 @@ func _tick_engine(vehicle: Vehicle) -> void:
 		_engine.play()
 
 
-func _player(stream: AudioStream, volume: float) -> AudioStreamPlayer:
+func _player(stream: AudioStream, volume: float, bus_name := "Master") -> AudioStreamPlayer:
 	var player := AudioStreamPlayer.new()
 	player.stream = stream
 	player.volume_db = volume
-	player.bus = "Master"
+	player.bus = bus_name if AudioServer.get_bus_index(bus_name) >= 0 else "Master"
 	add_child(player)
 	return player
 
@@ -146,6 +153,8 @@ static func _pcm(samples: PackedFloat32Array, loop: bool) -> AudioStreamWAV:
 
 
 static func peak(stream: AudioStreamWAV) -> float:
+	if stream == null or stream.format != AudioStreamWAV.FORMAT_16_BITS or stream.data.is_empty():
+		return 0.0
 	var loudest := 0.0
 	var count := stream.data.size() / 2
 	for i in count:

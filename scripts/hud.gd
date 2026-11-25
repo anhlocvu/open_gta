@@ -1,18 +1,47 @@
 class_name GameHUD
 extends CanvasLayer
 
+const ACTION_LABELS := {
+	"move_left": "Move Left", "move_right": "Move Right", "move_forward": "Move Forward", "move_back": "Move Back",
+	"jump": "Jump", "sprint": "Sprint", "crouch": "Crouch / Slide", "cover": "Take Cover",
+	"aim": "Aim ADS", "fire": "Fire / Punch Unarmed", "reload": "Reload", "interact": "Enter / Exit / Interact",
+	"swap_shoulder": "Swap Shoulder", "tactical_sprint": "Tactical Sprint", "melee": "Punch / Melee",
+	"return_menu": "Pause Menu", "camera_view": "Toggle Camera View", "graphics_profile": "Graphics Quality",
+	"weapon_holster": "Holster / Unarmed", "weapon_1": "Pistol / Buy Pistol", "weapon_2": "SMG / Buy SMG", "weapon_3": "Rifle / Buy Rifle", "weapon_4": "Shotgun / Buy Shotgun",
+	"cycle_weapon_up": "Next Weapon", "cycle_weapon_down": "Previous Weapon",
+	"a11y_turn_left": "Turn Left (Keyboard)", "a11y_turn_right": "Turn Right (Keyboard)",
+	"a11y_look_up": "Look Up (Keyboard)", "a11y_look_down": "Look Down (Keyboard)",
+	"a11y_center_pitch": "Center Pitch / Level Horizon", "a11y_aim_assist": "Snap Aim to Visible Enemy",
+	"a11y_status": "Read Player Status", "a11y_objective": "Read Objective & Distance",
+	"a11y_compass": "Read Compass Heading", "a11y_radar_cycle": "Next Radar Filter",
+	"a11y_radar_cycle_prev": "Previous Radar Filter",
+	"a11y_radar_prev": "Previous Radar Target", "a11y_radar_next": "Next Radar Target",
+	"a11y_sonar_sweep": "360 Audio Sonar Sweep",
+	"a11y_beacon_toggle": "Toggle 3D Navigation Beacon", "a11y_autowalk": "Toggle Auto-Walk",
+	"a11y_history_prev": "Speech History Previous", "a11y_history_next": "Speech History Next",
+	"a11y_repeat_last": "Repeat Last Speech", "a11y_help": "Accessibility Controls Help"
+}
+
 var _title: Label
 var _brief: Label
+var _continue_btn: Button
 var _start: Button
+var _resume_btn: Button
+var _save_btn: Button
+var _load_btn: Button
+var _settings_btn: Button
+var _main_menu_btn: Button
+var _quit_btn: Button
 var _objective: Label
 var _stars: Label
 var _prompt: Label
 var _banner: Label
 var _dist: Label
+var _district: Label
 var _start_panel: ColorRect
-var _time_chip: Button
-var _day_btn: Button
-var _night_btn: Button
+var _menu_col: VBoxContainer
+var _settings_scroll: ScrollContainer
+var _settings_content: VBoxContainer
 var _tag: Label
 var _health: Label
 var _money: Label
@@ -22,44 +51,20 @@ var _speed: Label
 var radar: Radar
 var _heat_punch: Tween
 var reticle: CombatReticle
-var _mode_text: Label
-var _subtitle: Label
-var _feed: Label
-var _results: ColorRect
-var _result_title: Label
-var _result_subtitle: Label
-var _result_standings: Label
-var _feed_lines: Array[String] = []
+var _waiting_action := ""
+var _waiting_prev_text := ""
+var _binding_button: Button
+var _in_pause := false
 
-func set_mode_text(text: String) -> void:
-	_mode_text.text = text
 
-func set_subtitle(text: String) -> void:
-	_subtitle.text = text
-	if _result_subtitle:
-		_result_subtitle.text = text
+func _game() -> Node:
+	return get_tree().current_scene
 
-func add_elimination(text: String) -> void:
-	_feed_lines.append(text)
-	if _feed_lines.size() > 5:
-		_feed_lines.pop_front()
-	_feed.text = "\n".join(_feed_lines)
-
-func show_results(on: bool) -> void:
-	_results.visible = on
-	if not on:
-		_feed_lines.clear()
-		_feed.text = ""
-		set_banner("")
-
-func present_results(title: String, score: Array, mode: int, standings := "") -> void:
-	_result_title.text = title + ("\nPOLÍCIA %d × %d AURORA" % [score[0], score[1]] if mode == MatchRules.Mode.CORRE else "\nÚLTIMO SOBREVIVENTE")
-	_result_standings.text = standings
-	show_results(true)
 
 func set_combat(on: bool, ads: bool, speed: float) -> void:
 	reticle.visible = on
 	reticle.gap = 3.0 if ads else 8.0 + minf(speed, 10.0)
+
 
 func confirm_hit() -> void:
 	reticle.hit_remaining = 0.15
@@ -71,23 +76,70 @@ func _ready() -> void:
 	show_start(true)
 	set_banner("")
 	set_prompt("")
-	set_time_of_day(true)
 
 
 func show_start(on: bool) -> void:
+	_in_pause = false
 	_start_panel.visible = on
+	if _menu_col: _menu_col.visible = true
+	if _settings_scroll: _settings_scroll.visible = false
+	if _settings_content: _settings_content.visible = false
+	var has_save := SaveManager.has_save()
+	if _continue_btn:
+		_continue_btn.visible = on and has_save
+		if has_save:
+			var sum := SaveManager.peek_summary()
+			_continue_btn.text = "CONTINUE GAME  ·  $%d  (%d PACKAGES LEFT)" % [int(sum.get("money", 420)), int(sum.get("packages_left", 3))]
+	if _resume_btn: _resume_btn.visible = false
+	if _save_btn: _save_btn.visible = false
+	if _load_btn: _load_btn.visible = false
+	if _main_menu_btn: _main_menu_btn.visible = false
+	if _start: _start.visible = true
 	if on and reticle:
 		reticle.visible = false
-	_time_chip.visible = not on
-	if radar:
-		radar.visible = not on
+	if radar: radar.visible = not on
 	if _health:
 		_health.visible = not on
 		_money.visible = not on
-	if _weapon:
-		_weapon.visible = not on
-	if _speed:
-		_speed.visible = not on
+	if _weapon: _weapon.visible = not on
+	if _speed: _speed.visible = not on
+	if _district: _district.visible = not on
+	if on and _start:
+		A11yUIHelper.say("Operation Chaos Main Menu. Slash for help.", true, 2, &"ui_screen")
+		A11yUIHelper.grab_focus_safe(_continue_btn if (_continue_btn and _continue_btn.visible) else _start)
+	elif not on:
+		A11yUIHelper.release_focus_safe(get_viewport())
+
+
+func show_pause(on: bool) -> void:
+	_in_pause = on
+	_start_panel.visible = on
+	if _menu_col: _menu_col.visible = true
+	if _settings_scroll: _settings_scroll.visible = false
+	if _settings_content: _settings_content.visible = false
+	if _continue_btn: _continue_btn.visible = false
+	if _resume_btn: _resume_btn.visible = on
+	if _save_btn: _save_btn.visible = on
+	if _load_btn:
+		_load_btn.visible = on
+		_load_btn.disabled = not SaveManager.has_save()
+	if _main_menu_btn: _main_menu_btn.visible = on
+	if _start: _start.visible = not on
+	if on and reticle:
+		reticle.visible = false
+	if radar: radar.visible = not on
+	if _health:
+		_health.visible = not on
+		_money.visible = not on
+	if _weapon: _weapon.visible = not on
+	if _speed: _speed.visible = not on
+	if _district: _district.visible = not on
+	if on and _resume_btn:
+		A11yUIHelper.say("Game paused.", true, 3, &"ui_screen", true)
+		A11yUIHelper.grab_focus_safe(_resume_btn)
+	elif not on:
+		A11yUIHelper.release_focus_safe(get_viewport())
+		A11yUIHelper.say("Resumed.", true, 2, &"ui_screen", true)
 
 
 func set_objective(text: String) -> void:
@@ -135,6 +187,8 @@ func set_prompt(text: String) -> void:
 func set_banner(text: String) -> void:
 	_banner.text = text
 	_banner.visible = text != ""
+	if text != "":
+		A11yUIHelper.say(text, false, 2, &"hud_banner")
 
 
 func set_stats(health: float, money: int, weapon := "", speed := -1.0) -> void:
@@ -165,16 +219,9 @@ func set_distance(meters: float, label: String) -> void:
 	_dist.text = "%s  ·  %dm" % [label, int(round(meters))]
 
 
-func set_time_of_day(night: bool) -> void:
-	if _time_chip:
-		_time_chip.text = "NIGHT" if night else "DAY"
-	if _tag:
-		_tag.text = "HARBOR DISTRICT  ·  " + ("NIGHT SHIFT" if night else "DAY RUN")
-	if _day_btn:
-		_day_btn.modulate = Color(1, 1, 1, 0.45 if night else 1.0)
-		_night_btn.modulate = Color(1, 1, 1, 1.0 if night else 0.45)
-	if _start_panel:
-		_start_panel.color = Color(0.04, 0.05, 0.08, 0.78) if night else Color(0.72, 0.82, 0.9, 0.55)
+func set_district(text: String) -> void:
+	if _district:
+		_district.text = text.to_upper() if text != "" else ""
 
 
 func _build() -> void:
@@ -187,29 +234,6 @@ func _build() -> void:
 	reticle.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	reticle.visible = false
 	root.add_child(reticle)
-	_mode_text = _label(16, Color("f0d060"))
-	_mode_text.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	_mode_text.offset_left = -600
-	_mode_text.offset_right = 600
-	_mode_text.offset_top = -55
-	_mode_text.offset_bottom = -30
-	_mode_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	root.add_child(_mode_text)
-	_subtitle = _label(22, Color.WHITE)
-	_subtitle.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	_subtitle.offset_left = -500
-	_subtitle.offset_right = 500
-	_subtitle.offset_top = -100
-	_subtitle.offset_bottom = -70
-	_subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	root.add_child(_subtitle)
-	_feed = _label(14, Color.WHITE)
-	_feed.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	_feed.offset_left = -270
-	_feed.offset_right = -20
-	_feed.offset_top = 180
-	_feed.offset_bottom = 290
-	root.add_child(_feed)
 
 	_objective = _label(18, Color("f0e6c8"))
 	_objective.set_anchors_preset(Control.PRESET_TOP_LEFT)
@@ -261,6 +285,14 @@ func _build() -> void:
 	_dist.offset_bottom = 120
 	root.add_child(_dist)
 
+	_district = _label(13, Color(0.75, 0.86, 0.95, 0.88))
+	_district.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	_district.offset_left = 188
+	_district.offset_top = 120
+	_district.offset_right = 520
+	_district.offset_bottom = 142
+	root.add_child(_district)
+
 	_crime = _label(14, Color("ff8a6a"))
 	_crime.set_anchors_preset(Control.PRESET_TOP_WIDE)
 	_crime.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -285,24 +317,12 @@ func _build() -> void:
 	_stars.offset_bottom = 82
 	root.add_child(_stars)
 
-	_time_chip = Button.new()
-	_time_chip.text = "NIGHT"
-	_time_chip.focus_mode = Control.FOCUS_NONE
-	_time_chip.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	_time_chip.offset_left = -150
-	_time_chip.offset_top = 88
-	_time_chip.offset_right = -24
-	_time_chip.offset_bottom = 124
-	_style_chip(_time_chip)
-	_time_chip.pressed.connect(_toggle_time)
-	root.add_child(_time_chip)
-
 	_prompt = _label(16, Color(0.94, 0.63, 0.19))
 	_prompt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_prompt.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	_prompt.offset_left = -240
+	_prompt.offset_left = -280
 	_prompt.offset_top = -150
-	_prompt.offset_right = 240
+	_prompt.offset_right = 280
 	_prompt.offset_bottom = -120
 	root.add_child(_prompt)
 
@@ -316,120 +336,426 @@ func _build() -> void:
 	root.add_child(_banner)
 
 	_start_panel = ColorRect.new()
-	_start_panel.color = Color(0.04, 0.05, 0.08, 0.78)
+	_start_panel.color = Color(0.08, 0.11, 0.16, 0.84)
 	_start_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_start_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	add_child(_start_panel)
 
-	var col := VBoxContainer.new()
-	col.set_anchors_preset(Control.PRESET_CENTER)
-	col.offset_left = -340
-	col.offset_top = -300
-	col.offset_right = 340
-	col.offset_bottom = 230
-	col.add_theme_constant_override("separation", 12)
-	_start_panel.add_child(col)
+	var center := CenterContainer.new()
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_start_panel.add_child(center)
 
-	_tag = _label(14, Color(0.94, 0.63, 0.19, 0.8))
-	_tag.text = "HARBOR DISTRICT  ·  NIGHT SHIFT"
+	var col := VBoxContainer.new()
+	col.custom_minimum_size.x = 580
+	col.add_theme_constant_override("separation", 12)
+	center.add_child(col)
+
+	_tag = _label(14, Color(0.94, 0.63, 0.19, 0.9))
+	_tag.text = "HARBOR DISTRICT  ·  DAY RUN"
 	_tag.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	col.add_child(_tag)
 
 	_title = _label(48, Color("f0e6c8"))
-	_title.text = "OPERAÇÃO CAOS"
+	_title.text = "OPERATION CHAOS"
 	_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	col.add_child(_title)
 
+	_menu_col = VBoxContainer.new()
+	_menu_col.add_theme_constant_override("separation", 12)
+	col.add_child(_menu_col)
+
 	_brief = _label(18, Color(0.88, 0.86, 0.78, 0.95))
-	_brief.text = "Cidade aberta, combate e modos competitivos originais.\nEscolha uma partida offline ou explore o distrito."
+	_brief.text = "Open-world crime sandbox. Steal the amber coupe, lose the heat, make the drop.\nUse Tab or Arrows to navigate, Enter to activate, Slash for help."
 	_brief.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	col.add_child(_brief)
+	_menu_col.add_child(_brief)
 
-	var modes := HBoxContainer.new()
-	modes.alignment = BoxContainer.ALIGNMENT_CENTER
-	modes.add_theme_constant_override("separation", 12)
-	col.add_child(modes)
-	_day_btn = _mode_button("DAY")
-	_night_btn = _mode_button("NIGHT")
-	_day_btn.pressed.connect(func() -> void: _set_time(false))
-	_night_btn.pressed.connect(func() -> void: _set_time(true))
-	modes.add_child(_day_btn)
-	modes.add_child(_night_btn)
+	_resume_btn = _primary_button("RESUME GAME", func() -> void:
+		var g := _game()
+		if g and g.has_method("set_paused"): g.set_paused(false))
+	_resume_btn.visible = false
+	_menu_col.add_child(_resume_btn)
+	A11yUIHelper.wire_button(_resume_btn, "Return to Harbor District gameplay")
 
-	_start = Button.new()
-	_start.text = "CAOS LIVRE"
-	_start.custom_minimum_size = Vector2(0, 56)
-	_start.focus_mode = Control.FOCUS_NONE
+	_continue_btn = _primary_button("CONTINUE GAME", _on_continue)
+	_continue_btn.visible = false
+	_menu_col.add_child(_continue_btn)
+	A11yUIHelper.wire_button(_continue_btn, "Resume your saved open world progress")
+
+	_start = _primary_button("NEW GAME · OPEN WORLD", _on_start)
+	_menu_col.add_child(_start)
+	A11yUIHelper.wire_button(_start, "Start a new open world mission")
+
+	_save_btn = _mode_button("SAVE GAME")
+	_save_btn.visible = false
+	_save_btn.pressed.connect(func() -> void:
+		var g := _game()
+		if g and g.has_method("save_current_game"): g.save_current_game())
+	_menu_col.add_child(_save_btn)
+	A11yUIHelper.wire_button(_save_btn, "Save current progress")
+
+	_load_btn = _mode_button("LOAD SAVED GAME")
+	_load_btn.visible = false
+	_load_btn.pressed.connect(func() -> void:
+		var g := _game()
+		if g and g.has_method("load_saved_game"): g.load_saved_game())
+	_menu_col.add_child(_load_btn)
+	A11yUIHelper.wire_button(_load_btn, "Load last saved game")
+
+	_settings_btn = _mode_button("SETTINGS")
+	_settings_btn.pressed.connect(_show_settings)
+	_menu_col.add_child(_settings_btn)
+	A11yUIHelper.wire_button(_settings_btn, "Graphics, audio, NVDA accessibility, and key bindings")
+
+	_main_menu_btn = _mode_button("MAIN MENU")
+	_main_menu_btn.visible = false
+	_main_menu_btn.pressed.connect(func() -> void:
+		var g := _game()
+		if g and g.has_method("return_to_main_menu"): g.return_to_main_menu())
+	_menu_col.add_child(_main_menu_btn)
+	A11yUIHelper.wire_button(_main_menu_btn, "Save and return to main menu")
+
+	_quit_btn = _mode_button("QUIT")
+	_quit_btn.pressed.connect(func() -> void: get_tree().quit())
+	_menu_col.add_child(_quit_btn)
+	A11yUIHelper.wire_button(_quit_btn, "Exit game")
+
+	var keys := _label(13, Color(0.78, 0.76, 0.68, 0.85))
+	keys.text = "WASD move · ; fire/punch · ' aim · -/= weapons · 0 fists · J/L turn · O snap aim · B/Shift+B radar · G sonar · Slash help"
+	keys.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_menu_col.add_child(keys)
+
+	_settings_scroll = ScrollContainer.new()
+	_settings_scroll.custom_minimum_size = Vector2(580, 460)
+	_settings_scroll.visible = false
+	_settings_scroll.follow_focus = true
+	col.add_child(_settings_scroll)
+
+	_settings_content = VBoxContainer.new()
+	_settings_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_settings_content.add_theme_constant_override("separation", 8)
+	_settings_content.visible = false
+	_settings_scroll.add_child(_settings_content)
+
+
+func _show_settings() -> void:
+	var g := _game()
+	if g == null:
+		return
+	_waiting_action = ""
+	_waiting_prev_text = ""
+	_binding_button = null
+	for child in _settings_content.get_children():
+		_settings_content.remove_child(child)
+		child.queue_free()
+	_menu_col.visible = false
+	_settings_scroll.visible = true
+	_settings_content.visible = true
+	_settings_content.add_child(_label(24, Color("f0e6c8"), "SETTINGS"))
+
+	var view := CheckButton.new()
+	view.text = "First-person camera"
+	view.button_pressed = g.camera.first_person
+	_settings_content.add_child(view)
+	A11yUIHelper.wire_toggle(view, "First-person camera")
+	view.toggled.connect(func(on: bool) -> void:
+		g.camera.set_first_person(on)
+		g.save_settings())
+
+	_settings_content.add_child(_label(16, Color("f0e6c8"), "Field of View (FOV)"))
+	var fov := HSlider.new()
+	fov.min_value = 70
+	fov.max_value = 110
+	fov.step = 1
+	fov.value = g.camera.first_person_fov
+	_settings_content.add_child(fov)
+	A11yUIHelper.wire_slider(fov, "Field of View", func(v: float) -> String: return "%d degrees" % int(round(v)))
+	fov.value_changed.connect(func(value: float) -> void:
+		if is_instance_valid(g):
+			g.camera.first_person_fov = value)
+	fov.drag_ended.connect(func(_changed: bool) -> void:
+		if is_instance_valid(g):
+			g.save_settings())
+
+	var quality := OptionButton.new()
+	for text in ["LOW", "MEDIUM", "HIGH"]:
+		quality.add_item(text)
+	quality.select(g.clock.quality)
+	_settings_content.add_child(quality)
+	A11yUIHelper.wire_option(quality, "Graphics Quality")
+	quality.item_selected.connect(func(value: int) -> void:
+		if is_instance_valid(g):
+			g.clock.set_quality(value)
+			g.save_settings())
+
+	_settings_content.add_child(_label(16, Color("f0e6c8"), "Master Volume"))
+	var master := HSlider.new()
+	master.min_value = 0.0
+	master.max_value = 1.0
+	master.step = 0.05
+	master.value = g.master_volume
+	_settings_content.add_child(master)
+	A11yUIHelper.wire_slider(master, "Master Volume")
+	master.value_changed.connect(func(value: float) -> void:
+		if is_instance_valid(g):
+			g.set_master_volume(value))
+	master.drag_ended.connect(func(_changed: bool) -> void:
+		if is_instance_valid(g):
+			g.save_settings())
+
+	_settings_content.add_child(_label(16, Color("f0e6c8"), "Mouse / ADS Sensitivity"))
+	var mouse := HSlider.new()
+	mouse.min_value = 0.001
+	mouse.max_value = 0.008
+	mouse.step = 0.0001
+	mouse.value = g.camera.mouse_sens
+	_settings_content.add_child(mouse)
+	A11yUIHelper.wire_slider(mouse, "Mouse Sensitivity")
+	mouse.value_changed.connect(func(value: float) -> void:
+		if is_instance_valid(g):
+			g.camera.mouse_sens = value)
+	mouse.drag_ended.connect(func(_changed: bool) -> void:
+		if is_instance_valid(g):
+			g.save_settings())
+
+	var ads := HSlider.new()
+	ads.min_value = 0.2
+	ads.max_value = 1.0
+	ads.step = 0.05
+	ads.value = g.camera.ads_sensitivity
+	_settings_content.add_child(ads)
+	A11yUIHelper.wire_slider(ads, "ADS Sensitivity")
+	ads.value_changed.connect(func(value: float) -> void:
+		if is_instance_valid(g):
+			g.camera.ads_sensitivity = value)
+	ads.drag_ended.connect(func(_changed: bool) -> void:
+		if is_instance_valid(g):
+			g.save_settings())
+
+	_build_accessibility_settings(g)
+
+	_settings_content.add_child(_label(18, Color("f0e6c8"), "Key Bindings"))
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size.y = 140
+	scroll.follow_focus = true
+	_settings_content.add_child(scroll)
+	var bindings := GridContainer.new()
+	bindings.columns = 2
+	bindings.add_theme_constant_override("h_separation", 8)
+	bindings.add_theme_constant_override("v_separation", 8)
+	scroll.add_child(bindings)
+	for action in ACTION_LABELS:
+		var events := InputMap.action_get_events(action)
+		var key_name := events[0].as_text().replace(" - Physical", "") if not events.is_empty() else "Unbound"
+		var caption := str(ACTION_LABELS.get(action, action)) + " · " + key_name
+		var binding := _mode_button(caption)
+		bindings.add_child(binding)
+		A11yUIHelper.wire_button(binding, "Press Enter to rebind")
+		binding.pressed.connect(func() -> void:
+			_waiting_action = action
+			_binding_button = binding
+			_waiting_prev_text = binding.text
+			binding.text = "Press key or button · Esc cancels"
+			A11yUIHelper.say("Listening for new key for %s. Press Escape to cancel." % str(ACTION_LABELS.get(action, action)), true, 3, &"ui_rebind", true))
+
+	var back := _mode_button("BACK")
+	back.pressed.connect(_close_settings)
+	_settings_content.add_child(back)
+	A11yUIHelper.wire_button(back, "Return to menu")
+	A11yUIHelper.say("Settings opened. Use Tab or arrows to navigate.", true, 2, &"ui_screen", true)
+	A11yUIHelper.grab_focus_safe(view)
+
+
+func _build_accessibility_settings(g: Node) -> void:
+	var speech := A11yUIHelper.speech()
+	if speech == null:
+		return
+	var s: A11ySettings = speech.settings
+	_settings_content.add_child(_label(20, Color("f0e6c8"), "ACCESSIBILITY (NVDA & AUDIO)"))
+
+	var nvda_chk := CheckButton.new()
+	nvda_chk.text = "NVDA Screen Reader Speech"
+	nvda_chk.button_pressed = s.speech_enabled
+	_settings_content.add_child(nvda_chk)
+	A11yUIHelper.wire_toggle(nvda_chk, "NVDA Screen Reader Speech")
+	nvda_chk.toggled.connect(func(on: bool) -> void:
+		s.speech_enabled = on
+		g.save_settings())
+
+	var verb := OptionButton.new()
+	verb.add_item("Combat Detail · Minimal", A11ySettings.Verbosity.MINIMAL)
+	verb.add_item("Combat Detail · Standard", A11ySettings.Verbosity.STANDARD)
+	verb.add_item("Combat Detail · Detailed", A11ySettings.Verbosity.DETAILED)
+	var v_idx := verb.get_item_index(s.combat_verbosity)
+	verb.select(v_idx if v_idx >= 0 else 1)
+	_settings_content.add_child(verb)
+	A11yUIHelper.wire_option(verb, "Combat Speech Detail")
+	verb.item_selected.connect(func(idx: int) -> void:
+		s.combat_verbosity = verb.get_item_id(idx) as A11ySettings.Verbosity
+		if is_instance_valid(g):
+			g.save_settings())
+
+	_settings_content.add_child(_label(16, Color("f0e6c8"), "Accessibility Cue Volume"))
+	var cue_vol := HSlider.new()
+	cue_vol.min_value = 0.0
+	cue_vol.max_value = 1.0
+	cue_vol.step = 0.05
+	cue_vol.value = s.cue_volume
+	_settings_content.add_child(cue_vol)
+	A11yUIHelper.wire_slider(cue_vol, "Accessibility Cue Volume")
+	cue_vol.value_changed.connect(func(v: float) -> void:
+		s.cue_volume = v)
+	cue_vol.drag_ended.connect(func(_changed: bool) -> void:
+		if is_instance_valid(g):
+			g.save_settings())
+
+	var snap_chk := CheckButton.new()
+	snap_chk.text = "Snap Turn Mode (On = Snap Step, Off = Smooth)"
+	snap_chk.button_pressed = s.snap_turn_enabled
+	_settings_content.add_child(snap_chk)
+	A11yUIHelper.wire_toggle(snap_chk, "Snap Turn Mode")
+	snap_chk.toggled.connect(func(on: bool) -> void:
+		s.snap_turn_enabled = on
+		g.save_settings())
+
+	var snap_deg := OptionButton.new()
+	for deg in A11ySettings.SNAP_ANGLES:
+		snap_deg.add_item("Snap Angle · %d degrees" % int(deg), int(deg))
+	var sel_idx := A11ySettings.SNAP_ANGLES.find(s.snap_turn_degrees)
+	snap_deg.select(sel_idx if sel_idx >= 0 else 2)
+	_settings_content.add_child(snap_deg)
+	A11yUIHelper.wire_option(snap_deg, "Snap Turn Angle")
+	snap_deg.item_selected.connect(func(idx: int) -> void:
+		s.snap_turn_degrees = float(snap_deg.get_item_id(idx))
+		g.save_settings())
+
+	var aim_chk := CheckButton.new()
+	aim_chk.text = "LOS Aim Assist (Visible Enemies Only)"
+	aim_chk.button_pressed = s.aim_assist_enabled
+	_settings_content.add_child(aim_chk)
+	A11yUIHelper.wire_toggle(aim_chk, "LOS Aim Assist")
+	aim_chk.toggled.connect(func(on: bool) -> void:
+		s.aim_assist_enabled = on
+		g.save_settings())
+
+	var cross_chk := CheckButton.new()
+	cross_chk.text = "Acoustic Crosshair Ping"
+	cross_chk.button_pressed = s.acoustic_crosshair_enabled
+	_settings_content.add_child(cross_chk)
+	A11yUIHelper.wire_toggle(cross_chk, "Acoustic Crosshair Ping")
+	cross_chk.toggled.connect(func(on: bool) -> void:
+		s.acoustic_crosshair_enabled = on
+		g.save_settings())
+
+	var beacon_chk := CheckButton.new()
+	beacon_chk.text = "3D Navigation Audio Beacon"
+	beacon_chk.button_pressed = s.beacon_enabled
+	_settings_content.add_child(beacon_chk)
+	A11yUIHelper.wire_toggle(beacon_chk, "3D Navigation Audio Beacon")
+	beacon_chk.toggled.connect(func(on: bool) -> void:
+		s.beacon_enabled = on
+		g.save_settings())
+
+	var obs_chk := CheckButton.new()
+	obs_chk.text = "Obstacle & Cover Proximity Cues"
+	obs_chk.button_pressed = s.obstacle_cues_enabled
+	_settings_content.add_child(obs_chk)
+	A11yUIHelper.wire_toggle(obs_chk, "Obstacle and Cover Proximity Cues")
+	obs_chk.toggled.connect(func(on: bool) -> void:
+		s.obstacle_cues_enabled = on
+		g.save_settings())
+
+	var flt := OptionButton.new()
+	for fname in ["Screen Filter · Off", "Screen Filter · Grayscale", "Screen Filter · Protanopia", "Screen Filter · Deuteranopia", "Screen Filter · Tritanopia"]:
+		flt.add_item(fname)
+	flt.select(s.screen_filter_mode)
+	_settings_content.add_child(flt)
+	A11yUIHelper.wire_option(flt, "Visual Screen Filter")
+	flt.item_selected.connect(func(idx: int) -> void:
+		speech.apply_screen_filter(idx)
+		g.save_settings())
+
+
+func _close_settings() -> void:
+	_settings_content.visible = false
+	_settings_scroll.visible = false
+	_menu_col.visible = true
+	_waiting_action = ""
+	_waiting_prev_text = ""
+	_binding_button = null
+	var g := _game()
+	if g and g.has_method("save_settings"):
+		g.save_settings()
+	A11yUIHelper.say("Pause Menu." if _in_pause else "Main Menu. Operation Chaos.", true, 2, &"ui_screen", true)
+	var target: Control = _resume_btn if _in_pause else (_continue_btn if (_continue_btn and _continue_btn.visible) else _start)
+	A11yUIHelper.grab_focus_safe(target)
+
+
+func capture_binding(event: InputEvent) -> bool:
+	if _waiting_action == "":
+		return false
+	if (event is InputEventKey or event is InputEventMouseButton) and event.is_pressed() and not event.is_echo():
+		if event is InputEventKey:
+			var k := event as InputEventKey
+			var code := k.physical_keycode if k.physical_keycode != KEY_NONE else k.keycode
+			if code in [KEY_SHIFT, KEY_CTRL, KEY_ALT, KEY_META]:
+				return true
+			if k.keycode in [KEY_INSERT, KEY_CAPSLOCK] or k.physical_keycode in [KEY_INSERT, KEY_CAPSLOCK]:
+				A11yUIHelper.say("Insert and Caps Lock are reserved for NVDA. Choose another key.", true, 3, &"ui_rebind", true)
+				return true
+			if k.keycode == KEY_ESCAPE or k.physical_keycode == KEY_ESCAPE:
+				_waiting_action = ""
+				if is_instance_valid(_binding_button):
+					_binding_button.text = _waiting_prev_text
+					A11yUIHelper.grab_focus_safe(_binding_button, true)
+				_waiting_prev_text = ""
+				_binding_button = null
+				A11yUIHelper.say("Rebinding cancelled.", true, 3, &"ui_rebind", true)
+				return true
+		var stored := event.duplicate() as InputEvent
+		stored.device = -1
+		InputMap.action_erase_events(_waiting_action)
+		InputMap.action_add_event(_waiting_action, stored)
+		var key_label := stored.as_text().replace(" - Physical", "")
+		if is_instance_valid(_binding_button):
+			_binding_button.text = str(ACTION_LABELS.get(_waiting_action, _waiting_action)) + " · " + key_label
+		A11yUIHelper.say("Bound %s to %s" % [str(ACTION_LABELS.get(_waiting_action, _waiting_action)), key_label], true, 3, &"ui_rebind", true)
+		_waiting_action = ""
+		_waiting_prev_text = ""
+		_binding_button = null
+		var g := _game()
+		if g and g.has_method("save_settings"):
+			g.save_settings()
+		return true
+	return false
+
+
+func _input(event: InputEvent) -> void:
+	if _waiting_action != "" and capture_binding(event):
+		get_viewport().set_input_as_handled()
+		return
+	if _settings_scroll and _settings_scroll.visible and event is InputEventKey and event.pressed and not event.echo and (event.keycode == KEY_ESCAPE or event.physical_keycode == KEY_ESCAPE):
+		_close_settings()
+		get_viewport().set_input_as_handled()
+
+
+func _primary_button(text: String, cb: Callable) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.custom_minimum_size = Vector2(0, 52)
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color("f0a030")
-	sb.corner_radius_top_left = 8
-	sb.corner_radius_top_right = 8
-	sb.corner_radius_bottom_left = 8
-	sb.corner_radius_bottom_right = 8
-	_start.add_theme_stylebox_override("normal", sb)
-	_start.add_theme_color_override("font_color", Color("0b1020"))
-	_start.add_theme_font_size_override("font_size", 20)
-	_start.pressed.connect(_on_start)
-	col.add_child(_start)
-	for mode in [MatchRules.Mode.CORRE, MatchRules.Mode.BATTLE]:
-		var mode_button := _mode_button("PROTEGE O CORRE! · offline 4v4" if mode == MatchRules.Mode.CORRE else "ÚLTIMO SOBREVIVENTE · offline 12")
-		mode_button.pressed.connect(func() -> void: get_tree().current_scene.start_mode(mode))
-		col.add_child(mode_button)
-	var narrator := CheckButton.new()
-	narrator.text = "Locutor · voz e legendas"
-	narrator.button_pressed = true
-	narrator.toggled.connect(func(on: bool) -> void: get_tree().current_scene.matches.announcer.set_enabled(on))
-	col.add_child(narrator)
-	var volume := HSlider.new()
-	volume.min_value = -40
-	volume.max_value = 6
-	volume.value = -6
-	volume.tooltip_text = "Volume da narração quando houver voz original"
-	volume.value_changed.connect(func(value: float) -> void: get_tree().current_scene.matches.announcer.volume_db = value)
-	col.add_child(volume)
-
-	var keys := _label(13, Color(0.78, 0.76, 0.68, 0.8))
-	keys.text = "WASD · Shift run · Ctrl crouch/slide · T tactical · RMB ADS · R reload · Q shoulder · F6 graphics"
-	keys.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	col.add_child(keys)
-	_build_results()
-
-func _build_results() -> void:
-	_results = ColorRect.new()
-	_results.color = Color(0.02, 0.04, 0.07, 0.92)
-	_results.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_results.visible = false
-	add_child(_results)
-	var column := VBoxContainer.new()
-	column.set_anchors_preset(Control.PRESET_CENTER)
-	column.offset_left = -320
-	column.offset_right = 320
-	column.offset_top = -300
-	column.offset_bottom = 150
-	column.add_theme_constant_override("separation", 24)
-	_results.add_child(column)
-	_result_title = _label(28, Color("f0d060"))
-	_result_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	column.add_child(_result_title)
-	_result_subtitle = _label(20, Color.WHITE)
-	_result_subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	column.add_child(_result_subtitle)
-	_result_standings = _label(14, Color.WHITE)
-	_result_standings.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	column.add_child(_result_standings)
-	var restart := _mode_button("JOGAR NOVAMENTE")
-	restart.pressed.connect(func() -> void: get_tree().current_scene.matches.restart())
-	column.add_child(restart)
-	var menu := _mode_button("VOLTAR AO MENU")
-	menu.pressed.connect(func() -> void: get_tree().current_scene.matches.return_menu())
-	column.add_child(menu)
+	sb.set_corner_radius_all(8)
+	b.add_theme_stylebox_override("normal", sb)
+	b.add_theme_color_override("font_color", Color("0b1020"))
+	b.add_theme_font_size_override("font_size", 20)
+	b.pressed.connect(cb)
+	return b
 
 
 func _mode_button(text: String) -> Button:
 	var b := Button.new()
 	b.text = text
-	b.custom_minimum_size = Vector2(120, 42)
-	b.focus_mode = Control.FOCUS_NONE
+	b.custom_minimum_size = Vector2(140, 42)
 	_style_chip(b)
 	return b
 
@@ -445,28 +771,21 @@ func _style_chip(b: Button) -> void:
 	b.add_theme_font_size_override("font_size", 16)
 
 
-func _toggle_time() -> void:
-	var clock := get_tree().get_first_node_in_group("day_night") as DayNight
-	if clock:
-		clock.toggle()
-		set_time_of_day(clock.is_night)
-
-
-func _set_time(night: bool) -> void:
-	var clock := get_tree().get_first_node_in_group("day_night") as DayNight
-	if clock:
-		clock.apply(night)
-		set_time_of_day(night)
+func _on_continue() -> void:
+	var g := _game()
+	if g and g.has_method("begin_saved"):
+		g.begin_saved()
 
 
 func _on_start() -> void:
-	var game := get_tree().current_scene
-	if game and game.has_method("start_mode"):
-		game.start_mode(MatchRules.Mode.FREE)
+	var g := _game()
+	if g and g.has_method("begin"):
+		g.begin()
 
 
-func _label(size: int, color: Color) -> Label:
+func _label(size: int, color: Color, text := "") -> Label:
 	var l := Label.new()
+	l.text = text
 	l.add_theme_font_size_override("font_size", size)
 	l.add_theme_color_override("font_color", color)
 	l.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.55))

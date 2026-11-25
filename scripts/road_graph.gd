@@ -30,7 +30,7 @@ static func grid(xs: Array, zs: Array) -> RoadGraph:
 
 func nearest(pos: Vector3) -> int:
 	var best := 0
-	var best_d := 9999.0
+	var best_d := INF
 	for i in nodes.size():
 		var d := pos.distance_squared_to(nodes[i])
 		if d < best_d:

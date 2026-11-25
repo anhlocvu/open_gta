@@ -6,6 +6,7 @@ enum Kind { HEALTH, CASH, PACKAGE }
 var kind: Kind = Kind.HEALTH
 var amount := 25
 var taken := false
+var save_key := ""
 
 
 func setup(p_kind: Kind, pos: Vector3, p_amount := 25) -> void:
@@ -15,6 +16,7 @@ func setup(p_kind: Kind, pos: Vector3, p_amount := 25) -> void:
 
 
 func _ready() -> void:
+	add_to_group("world_pickups")
 	collision_layer = 0
 	collision_mask = 2
 	monitoring = true

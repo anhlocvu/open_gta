@@ -1,0 +1,174 @@
+[gd_scene format=3 uid="uid://b6u5d6udex1v1"]
+
+[ext_resource type="Script" uid="uid://bcf5a6truj2k7" path="res://addons/gato_input_remapper/ui/input_remapper_ui.gd" id="1_05ple"]
+[ext_resource type="Theme" uid="uid://cwy34ps7k0g02" path="res://addons/gato_input_remapper/ui/input_remapper_ui.tres" id="1_18ywu"]
+[ext_resource type="PackedScene" uid="uid://dkaux4wn52qf1" path="res://addons/gato_input_remapper/ui/control_scheme_selector.tscn" id="1_yg0ao"]
+[ext_resource type="Texture2D" uid="uid://cjlll0r0ig8pw" path="res://addons/gato_input_remapper/ui/sprites/controller.svg" id="3_18ywu"]
+[ext_resource type="PackedScene" uid="uid://b7qloakgx7etx" path="res://addons/gato_input_remapper/ui/category.tscn" id="3_yg0ao"]
+[ext_resource type="PackedScene" uid="uid://x1b45m56mm2l" path="res://addons/gato_input_remapper/ui/2d_input_map.tscn" id="4_mreui"]
+[ext_resource type="PackedScene" uid="uid://bw8doo3b01x73" path="res://addons/gato_input_remapper/ui/press_key_dialog.tscn" id="5_6fg7x"]
+[ext_resource type="PackedScene" uid="uid://kk68b0rf25so" path="res://addons/gato_input_remapper/ui/action_container.tscn" id="7_05rvd"]
+[ext_resource type="PackedScene" uid="uid://pvxfv052stfv" path="res://addons/gato_input_remapper/ui/background_blur/background_blur.tscn" id="10_8h5fo"]
+[ext_resource type="PackedScene" uid="uid://c0q1il8rqflxw" path="res://addons/gato_input_remapper/ui/close_without_saving_dialog.tscn" id="12_ix0sm"]
+[ext_resource type="PackedScene" uid="uid://dnj8weyejjv11" path="res://addons/gato_input_remapper/ui/error_dialog.tscn" id="13_4idbt"]
+[ext_resource type="AudioStream" uid="uid://c7dxc18dnx6us" path="res://modules/core_systems/dialogue_system/sounds/accept.ogg" id="14_e26m8"]
+[ext_resource type="AudioStream" uid="uid://bqv8f3n5iao3y" path="res://modules/core_systems/dialogue_system/sounds/cancel.ogg" id="15_dfgbc"]
+
+[node name="InputRemapperUi" type="Control" unique_id=718320937 node_paths=PackedStringArray("_control_scheme_selector", "_movement_input_map", "_interactions_action_container")]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme = ExtResource("1_18ywu")
+script = ExtResource("1_05ple")
+_control_scheme_selector = NodePath("PanelContainer/MarginContainer/ScrollContainer/MarginContainer/VBoxContainer/ControlSchemeCaregory/ControlSchemeSelector")
+_movement_input_map = NodePath("PanelContainer/MarginContainer/ScrollContainer/MarginContainer/VBoxContainer/Movement/2DInputMap")
+_interactions_action_container = NodePath("PanelContainer/MarginContainer/ScrollContainer/MarginContainer/VBoxContainer/Interaction/ActionContainer")
+
+[node name="TittlePanelContainer" type="PanelContainer" parent="." unique_id=1110522343]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -567.0
+offset_top = -524.0
+offset_right = 567.0
+offset_bottom = -426.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="PanelContainer" type="PanelContainer" parent="TittlePanelContainer" unique_id=33010022]
+layout_mode = 2
+size_flags_horizontal = 4
+theme_type_variation = &"TitleBackground"
+
+[node name="HBoxContainer" type="HBoxContainer" parent="TittlePanelContainer/PanelContainer" unique_id=1060846628]
+layout_mode = 2
+theme_override_constants/separation = 20
+
+[node name="TextureRect" type="TextureRect" parent="TittlePanelContainer/PanelContainer/HBoxContainer" unique_id=1044591961]
+layout_mode = 2
+texture = ExtResource("3_18ywu")
+expand_mode = 3
+stretch_mode = 4
+
+[node name="Label" type="Label" parent="TittlePanelContainer/PanelContainer/HBoxContainer" unique_id=150548940]
+layout_mode = 2
+theme_type_variation = &"MenuTitle"
+text = "menu_title"
+horizontal_alignment = 1
+uppercase = true
+
+[node name="PanelContainer" type="PanelContainer" parent="." unique_id=391513200]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -567.5
+offset_top = -408.0
+offset_right = 567.5
+offset_bottom = 520.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="MarginContainer" type="MarginContainer" parent="PanelContainer" unique_id=668384385]
+layout_mode = 2
+theme_override_constants/margin_left = 40
+theme_override_constants/margin_top = 50
+theme_override_constants/margin_right = 40
+theme_override_constants/margin_bottom = 30
+
+[node name="ScrollContainer" type="ScrollContainer" parent="PanelContainer/MarginContainer" unique_id=1164281544]
+layout_mode = 2
+theme_override_constants/scrollbar_h_separation = 80
+follow_focus = true
+horizontal_scroll_mode = 0
+
+[node name="MarginContainer" type="MarginContainer" parent="PanelContainer/MarginContainer/ScrollContainer" unique_id=223263592]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/margin_left = 10
+
+[node name="VBoxContainer" type="VBoxContainer" parent="PanelContainer/MarginContainer/ScrollContainer/MarginContainer" unique_id=262821437]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 30
+
+[node name="ControlSchemeCaregory" parent="PanelContainer/MarginContainer/ScrollContainer/MarginContainer/VBoxContainer" unique_id=748209293 instance=ExtResource("3_yg0ao")]
+layout_mode = 2
+size_flags_horizontal = 1
+theme_override_constants/separation = 30
+title = "section_title_control_scheme"
+
+[node name="ControlSchemeSelector" parent="PanelContainer/MarginContainer/ScrollContainer/MarginContainer/VBoxContainer/ControlSchemeCaregory" unique_id=513719737 instance=ExtResource("1_yg0ao")]
+layout_mode = 2
+
+[node name="HSeparator" type="HSeparator" parent="PanelContainer/MarginContainer/ScrollContainer/MarginContainer/VBoxContainer" unique_id=722715464]
+layout_mode = 2
+
+[node name="Movement" parent="PanelContainer/MarginContainer/ScrollContainer/MarginContainer/VBoxContainer" unique_id=2047251977 instance=ExtResource("3_yg0ao")]
+layout_mode = 2
+size_flags_horizontal = 1
+theme_override_constants/separation = 30
+title = "movement"
+
+[node name="2DInputMap" parent="PanelContainer/MarginContainer/ScrollContainer/MarginContainer/VBoxContainer/Movement" unique_id=827562170 node_paths=PackedStringArray("input_remapper_ui", "press_key_dialog") instance=ExtResource("4_mreui")]
+layout_mode = 2
+input_remapper_ui = NodePath("../../../../../../..")
+action_name = &"move"
+press_key_dialog = NodePath("../../../../../../../PressKeyDialog")
+
+[node name="HSeparator2" type="HSeparator" parent="PanelContainer/MarginContainer/ScrollContainer/MarginContainer/VBoxContainer" unique_id=828579408]
+layout_mode = 2
+
+[node name="Interaction" parent="PanelContainer/MarginContainer/ScrollContainer/MarginContainer/VBoxContainer" unique_id=1853740966 instance=ExtResource("3_yg0ao")]
+layout_mode = 2
+size_flags_horizontal = 1
+theme_override_constants/separation = 30
+title = "interaction"
+
+[node name="ActionContainer" parent="PanelContainer/MarginContainer/ScrollContainer/MarginContainer/VBoxContainer/Interaction" unique_id=95324329 node_paths=PackedStringArray("input_remapper_ui", "press_key_dialog") instance=ExtResource("7_05rvd")]
+layout_mode = 2
+input_remapper_ui = NodePath("../../../../../../..")
+press_key_dialog = NodePath("../../../../../../../PressKeyDialog")
+
+[node name="SaveChangesButton" type="Button" parent="PanelContainer/MarginContainer/ScrollContainer/MarginContainer/VBoxContainer" unique_id=67432300]
+layout_mode = 2
+text = "save_changes"
+
+[node name="BackgroundBlur" parent="." unique_id=122701923 instance=ExtResource("10_8h5fo")]
+layout_mode = 1
+
+[node name="PressKeyDialog" parent="." unique_id=1683379886 instance=ExtResource("5_6fg7x")]
+layout_mode = 1
+
+[node name="CloseWithoutSavingDialog" parent="." unique_id=84929324 instance=ExtResource("12_ix0sm")]
+layout_mode = 1
+
+[node name="ErrorDialog" parent="." unique_id=534890888 instance=ExtResource("13_4idbt")]
+layout_mode = 1
+
+[node name="AcceptAudioStreamPlayer" type="AudioStreamPlayer" parent="." unique_id=1016087300]
+unique_name_in_owner = true
+stream = ExtResource("14_e26m8")
+bus = &"SFX"
+
+[node name="CancelAudioStreamPlayer" type="AudioStreamPlayer" parent="." unique_id=1390252073]
+unique_name_in_owner = true
+stream = ExtResource("15_dfgbc")
+bus = &"SFX"
+
+[connection signal="mouse_entered" from="PanelContainer/MarginContainer/ScrollContainer/MarginContainer/VBoxContainer/SaveChangesButton" to="PanelContainer/MarginContainer/ScrollContainer/MarginContainer/VBoxContainer/SaveChangesButton" method="grab_focus"]
+[connection signal="pressed" from="PanelContainer/MarginContainer/ScrollContainer/MarginContainer/VBoxContainer/SaveChangesButton" to="." method="save_changes"]
+[connection signal="input_read" from="PressKeyDialog" to="BackgroundBlur" method="hide_blur" unbinds=1]
+[connection signal="started_reading_input" from="PressKeyDialog" to="BackgroundBlur" method="show_blur"]
+[connection signal="appeared" from="CloseWithoutSavingDialog" to="BackgroundBlur" method="show_blur"]
+[connection signal="disappeared" from="CloseWithoutSavingDialog" to="BackgroundBlur" method="hide_blur"]
+[connection signal="appeared" from="ErrorDialog" to="BackgroundBlur" method="show_blur"]
+[connection signal="disappeared" from="ErrorDialog" to="BackgroundBlur" method="hide_blur"]

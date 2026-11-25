@@ -173,9 +173,9 @@ func _build() -> void:
 	crouch_btn.pressed.connect(func() -> void: crouch_pressed = true)
 	var cover_btn := _action_button("COVER", Vector2(-432, -424))
 	cover_btn.pressed.connect(func() -> void: cover_pressed = true)
-	var plate_btn := _action_button("PLACA", Vector2(-432, -118))
+	var plate_btn := _action_button("PLATE", Vector2(-432, -118))
 	plate_btn.pressed.connect(func() -> void: plate_pressed = true)
-	var view_btn := _action_button("VISTA", Vector2(-564, -118))
+	var view_btn := _action_button("VIEW", Vector2(-564, -118))
 	view_btn.pressed.connect(func() -> void: view_pressed = true)
 	_combat_buttons.assign([fire_btn, aim_btn, reload_btn, crouch_btn, cover_btn, plate_btn, view_btn])
 	for button in _combat_buttons:

@@ -57,6 +57,7 @@ var vault_remaining := 0.0
 var _vault_points: Array[Vector3] = []
 var _vault_stage := 0
 var _vault_stage_time := 0.0
+var a11y_move_override := Vector2.ZERO
 
 
 func request_jump() -> void:
@@ -234,6 +235,8 @@ func _move_input() -> Vector2:
 	var touch := get_tree().get_first_node_in_group("touch") as TouchControls
 	if touch:
 		v += touch.move
+	if v.length_squared() < 0.001 and a11y_move_override.length_squared() > 0.001:
+		v = a11y_move_override
 	return v.limit_length(1.0)
 
 func control_yaw() -> float:
@@ -300,11 +303,15 @@ func cycle_weapon(dir: int) -> void:
 	if owned_weapons.is_empty():
 		weapon = Arsenal.Id.NONE
 		return
-	var i := owned_weapons.find(weapon)
-	i = (i + dir) % owned_weapons.size()
+	var order: Array[int] = [Arsenal.Id.NONE]
+	for wid in owned_weapons:
+		if not order.has(wid):
+			order.append(wid)
+	var i := order.find(weapon)
 	if i < 0:
-		i = owned_weapons.size() - 1
-	weapon = owned_weapons[i]
+		i = 0
+	i = posmod(i + dir, order.size())
+	weapon = order[i]
 	reload_remaining = 0.0
 
 

@@ -6,7 +6,7 @@ signal changed(profile: Dictionary)
 @export var capture_xp := 80
 @export var victory_xp := 120
 @export var level_thresholds := PackedInt32Array([0, 200, 500, 1000, 1800, 3000])
-@export var level_titles := PackedStringArray(["Recruta", "Firmeza", "Sentinela", "Guardião da rua", "Veterano do bairro", "Lenda do Caos"])
+@export var level_titles := PackedStringArray(["Recruit", "Streetwise", "Sentinel", "Block Guardian", "District Veteran", "Chaos Legend"])
 var profile_path := "user://progression.cfg"
 var xp := 0
 var last_error := OK

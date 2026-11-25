@@ -44,6 +44,9 @@ var _garage: Area3D
 var _spray: Area3D
 var _water: MeshInstance3D
 var _facades: Dictionary = {}
+var _mat_cache: Dictionary = {}
+var _box_batches: Dictionary = {}
+var _unit_box: BoxMesh
 
 
 func make_graph() -> RoadGraph:
@@ -51,6 +54,10 @@ func make_graph() -> RoadGraph:
 
 
 func build() -> void:
+	_mat_cache.clear()
+	_box_batches.clear()
+	_unit_box = BoxMesh.new()
+	_unit_box.size = Vector3.ONE
 	_grid()
 	_ground()
 	_water_body()
@@ -64,6 +71,7 @@ func build() -> void:
 	_shops()
 	_army_base()
 	_markers()
+	_flush_box_batches()
 	refresh_reflections()
 
 
@@ -306,19 +314,18 @@ func _landmark(pos: Vector3, height: float, style: String) -> void:
 func _building(pos: Vector3, size: Vector3, style: String, is_drop := false) -> void:
 	var facade := _facade_mat(style)
 	var body_h := maxf(size.y - 3.2, 4.0)
-	var base := Palette.surfaced("concrete", Color("d6d2cc"), 0.04, 0.62, 0.16)
+	var base := _surfaced_mat("concrete", Color("d6d2cc"), 0.04, 0.62, 0.16)
 	_static_box(pos + Vector3(0, 1.6, 0), Vector3(size.x + 0.22, 3.2, size.z + 0.22), base)
 	_static_box(pos + Vector3(0, 3.2 + body_h * 0.5, 0), Vector3(size.x, body_h, size.z), facade)
 	if style != "warehouse":
-		var shop_glass := Palette.glass(Color(0.12, 0.16, 0.2, 0.78), Color("f0c878"))
-		window_mats.append(shop_glass)
+		var shop_glass := _glass_mat(Color(0.12, 0.16, 0.2, 0.78), Color("f0c878"))
 		_mesh_box(pos + Vector3(0, 1.45, size.z * 0.5 + 0.14), Vector3(size.x * 0.78, 2.5, 0.08), shop_glass)
-		var door := Palette.mat(Color("1a1614"), 0.35, 0.38)
+		var door := _simple_mat(Color("1a1614"), 0.35, 0.38)
 		_mesh_box(pos + Vector3(-size.x * 0.16, 1.15, size.z * 0.5 + 0.18), Vector3(1.2, 2.2, 0.1), door)
-		var awning := Palette.surfaced("metal", Color.WHITE, 0.2, 0.45, 0.8)
+		var awning := _surfaced_mat("metal", Color.WHITE, 0.2, 0.45, 0.8)
 		_mesh_box(pos + Vector3(0, 2.85, size.z * 0.5 + 0.55), Vector3(size.x * 0.7, 0.08, 1.1), awning)
-	var roof := Palette.surfaced("roof", Color.WHITE, 0.04, 0.68, 0.22)
-	var cap := Palette.surfaced("concrete", Color("c8ccd0"), 0.05, 0.58, 0.28)
+	var roof := _surfaced_mat("roof", Color.WHITE, 0.04, 0.68, 0.22)
+	var cap := _surfaced_mat("concrete", Color("c8ccd0"), 0.05, 0.58, 0.28)
 	_mesh_box(pos + Vector3(0, size.y + 0.16, 0), Vector3(size.x + 0.5, 0.28, size.z + 0.5), cap)
 	_mesh_box(pos + Vector3(0, size.y + 0.34, 0), Vector3(size.x - 0.35, 0.16, size.z - 0.35), roof)
 	if size.y > 28.0:
@@ -333,7 +340,7 @@ func _building(pos: Vector3, size: Vector3, style: String, is_drop := false) -> 
 		cyl.height = 1.6
 		tank.mesh = cyl
 		tank.position = pos + Vector3(-size.x * 0.2, size.y + 1.15, size.z * 0.1)
-		tank.material_override = Palette.surfaced("warehouse", Color.WHITE, 0.45, 0.35, 0.7)
+		tank.material_override = _surfaced_mat("warehouse", Color.WHITE, 0.45, 0.35, 0.7)
 		add_child(tank)
 
 
@@ -370,9 +377,9 @@ func _lamps() -> void:
 
 
 func _lamp(pos: Vector3) -> void:
-	var pole := Palette.surfaced("metal", Color("b8bcc0"), 0.72, 0.32, 1.4)
+	var pole := _surfaced_mat("metal", Color("b8bcc0"), 0.72, 0.32, 1.4)
 	_mesh_box(pos + Vector3(0, 2.6, 0), Vector3(0.12, 5.2, 0.12), pole)
-	_mesh_box(pos + Vector3(0, 5.3, 0.55), Vector3(0.55, 0.1, 1.15), Palette.mat(Color("1c2026"), 0.7, 0.32))
+	_mesh_box(pos + Vector3(0, 5.3, 0.55), Vector3(0.55, 0.1, 1.15), _simple_mat(Color("1c2026"), 0.7, 0.32))
 	var bulb := MeshInstance3D.new()
 	var sph := SphereMesh.new()
 	sph.radius = 0.16
@@ -424,19 +431,19 @@ func _props() -> void:
 
 
 func _dumpster(pos: Vector3) -> void:
-	_mesh_box(pos, Vector3(1.8, 1.1, 1.05), Palette.surfaced("metal", Color.WHITE, 0.35, 0.42, 0.7))
-	_mesh_box(pos + Vector3(0, 0.62, 0), Vector3(1.85, 0.08, 1.1), Palette.mat(Color("2a2e28"), 0.45, 0.4))
+	_mesh_box(pos, Vector3(1.8, 1.1, 1.05), _surfaced_mat("metal", Color.WHITE, 0.35, 0.42, 0.7))
+	_mesh_box(pos + Vector3(0, 0.62, 0), Vector3(1.85, 0.08, 1.1), _simple_mat(Color("2a2e28"), 0.45, 0.4))
 
 
 func _hydrant(pos: Vector3) -> void:
-	var red := Palette.mat(Color("b42222"), 0.35, 0.38)
+	var red := _simple_mat(Color("b42222"), 0.35, 0.38)
 	_mesh_box(pos, Vector3(0.28, 0.72, 0.28), red)
 	_mesh_box(pos + Vector3(0, 0.42, 0), Vector3(0.46, 0.16, 0.22), red)
 
 
 func _planter(pos: Vector3) -> void:
-	_mesh_box(pos, Vector3(1.15, 0.48, 1.15), Palette.surfaced("concrete", Color("d0ccc6"), 0.0, 0.7, 0.6))
-	_mesh_box(pos + Vector3(0, 0.32, 0), Vector3(0.95, 0.12, 0.95), Palette.surfaced("grass", Color.WHITE, 0.0, 0.85, 0.5))
+	_mesh_box(pos, Vector3(1.15, 0.48, 1.15), _surfaced_mat("concrete", Color("d0ccc6"), 0.0, 0.7, 0.6))
+	_mesh_box(pos + Vector3(0, 0.32, 0), Vector3(0.95, 0.12, 0.95), _surfaced_mat("grass", Color.WHITE, 0.0, 0.85, 0.5))
 
 
 func _tree(pos: Vector3) -> void:
@@ -447,9 +454,9 @@ func _tree(pos: Vector3) -> void:
 	cyl.height = 4.4
 	trunk.mesh = cyl
 	trunk.position = pos + Vector3(0, 2.2, 0)
-	trunk.material_override = Palette.surfaced("wood", Color.WHITE, 0.0, 0.78, 0.55)
+	trunk.material_override = _surfaced_mat("wood", Color.WHITE, 0.0, 0.78, 0.55)
 	add_child(trunk)
-	var leaf_mat := Palette.surfaced("grass", Color("8aaa6a"), 0.0, 0.82, 0.7)
+	var leaf_mat := _surfaced_mat("grass", Color("8aaa6a"), 0.0, 0.82, 0.7)
 	var leaf := MeshInstance3D.new()
 	var sph := SphereMesh.new()
 	sph.radius = 2.4
@@ -469,7 +476,7 @@ func _tree(pos: Vector3) -> void:
 
 
 func _crate(pos: Vector3) -> void:
-	_mesh_box(pos, Vector3(1.1, 0.9, 1.1), Palette.surfaced("wood", Color.WHITE, 0.0, 0.7, 0.7))
+	_mesh_box(pos, Vector3(1.1, 0.9, 1.1), _surfaced_mat("wood", Color.WHITE, 0.0, 0.7, 0.7))
 
 
 func _pier() -> void:
@@ -710,10 +717,54 @@ func _static_box(pos: Vector3, size: Vector3, material: Material) -> void:
 
 
 func _mesh_box(pos: Vector3, size: Vector3, material: Material) -> void:
-	var mesh := MeshInstance3D.new()
-	var box := BoxMesh.new()
-	box.size = size
-	mesh.mesh = box
-	mesh.position = pos
-	mesh.material_override = material
-	add_child(mesh)
+	if not _box_batches.has(material):
+		_box_batches[material] = []
+	var xform := Transform3D(Basis.from_scale(size), pos)
+	(_box_batches[material] as Array).append(xform)
+
+
+func _flush_box_batches() -> void:
+	for mat_key in _box_batches:
+		var xforms: Array = _box_batches[mat_key]
+		if xforms.is_empty():
+			continue
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = _unit_box
+		mm.instance_count = xforms.size()
+		for i in xforms.size():
+			mm.set_instance_transform(i, xforms[i])
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		mmi.material_override = mat_key
+		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(mmi)
+	_box_batches.clear()
+
+
+func _surfaced_mat(tex_id: String, tint := Color.WHITE, metallic := 0.0, roughness := 0.72, tile := 0.22) -> StandardMaterial3D:
+	var key := "s:%s:%s:%.3f:%.3f:%.3f" % [tex_id, tint.to_html(false), metallic, roughness, tile]
+	if _mat_cache.has(key):
+		return _mat_cache[key]
+	var m := Palette.surfaced(tex_id, tint, metallic, roughness, tile)
+	_mat_cache[key] = m
+	return m
+
+
+func _simple_mat(color: Color, metallic := 0.0, roughness := 0.82) -> StandardMaterial3D:
+	var key := "m:%s:%.3f:%.3f" % [color.to_html(false), metallic, roughness]
+	if _mat_cache.has(key):
+		return _mat_cache[key]
+	var m := Palette.mat(color, metallic, roughness)
+	_mat_cache[key] = m
+	return m
+
+
+func _glass_mat(color: Color, night_glow := Color.BLACK) -> StandardMaterial3D:
+	var key := "g:%s:%s" % [color.to_html(true), night_glow.to_html(false)]
+	if _mat_cache.has(key):
+		return _mat_cache[key]
+	var m := Palette.glass(color, night_glow)
+	window_mats.append(m)
+	_mat_cache[key] = m
+	return m

@@ -2,6 +2,7 @@ class_name Radar
 extends Control
 
 var world_span := 360.0
+var _redraw_cd := 0.0
 
 
 func _ready() -> void:
@@ -10,8 +11,14 @@ func _ready() -> void:
 	clip_contents = true
 
 
+static func _dim_col(col: Color, active_cat: int, matches: bool) -> Color:
+	return col if (active_cat == A11yRadar.Category.ALL or matches) else Color(col.r, col.g, col.b, col.a * 0.25)
+
+
 func _draw() -> void:
 	var r := size * 0.5
+	if r.x < 12.0:
+		return
 	var c := size * 0.5
 	draw_circle(c, r.x - 2.0, Color(0.04, 0.07, 0.08, 0.72))
 	draw_arc(c, r.x - 3.0, 0, TAU, 40, Color("f0a030"), 2.0)
@@ -27,35 +34,66 @@ func _draw() -> void:
 	elif game and game.get("active_vehicle") and game.active_vehicle:
 		tracked = game.active_vehicle
 		origin = tracked.global_position
-	if game and game.get("matches") and game.matches.competitive():
-		_draw_match(game.matches, origin, c, r.x - 8.0)
-		return
+	var active_cat := A11yRadar.Category.ALL
+	var locked_pos := Vector3.ZERO
+	var has_locked := false
+	if game and game.get("a11y") and game.a11y:
+		var a11y = game.a11y
+		if a11y.get("radar"):
+			active_cat = int(a11y.radar.selected_category)
+			if a11y.radar.locked_target_id != "" and a11y.get("nav"):
+				var tpos: Vector3 = a11y.nav.target_position
+				if tpos != Vector3.ZERO:
+					locked_pos = tpos
+					has_locked = true
 	for node in get_tree().get_nodes_in_group("peds"):
-		_blip(origin, (node as Node3D).global_position, c, r.x - 8.0, Color(0.7, 0.7, 0.65, 0.55), 2.0)
+		var ped := node as Node3D
+		if ped == null or bool(ped.get("downed")):
+			continue
+		var is_off := bool(ped.get("is_officer"))
+		var col: Color = Color("ff6666") if is_off else Color(0.7, 0.7, 0.65, 0.55)
+		var matches := (active_cat == A11yRadar.Category.ENEMIES) if is_off else (active_cat == A11yRadar.Category.CIVILIANS)
+		_blip(origin, ped.global_position, c, r.x - 8.0, _dim_col(col, active_cat, matches), 2.4 if is_off else 2.0)
 	for node in get_tree().get_nodes_in_group("vehicles"):
 		var v := node as Vehicle
 		if v == null or v.occupied:
 			continue
 		var col := Color(0.55, 0.6, 0.7, 0.8)
+		var matches := active_cat == A11yRadar.Category.PLACES
 		if v.kind == Vehicle.Kind.COP:
 			col = Color("ff4a4a")
+			matches = active_cat == A11yRadar.Category.ENEMIES
 		elif v.kind == Vehicle.Kind.COUPE:
 			col = Palette.amber()
+			matches = active_cat == A11yRadar.Category.PLACES or active_cat == A11yRadar.Category.OBJECTIVES
 		elif v.kind == Vehicle.Kind.MILITARY:
 			col = Color("6a8a3a")
-		_blip(origin, v.global_position, c, r.x - 8.0, col, 3.2)
+		_blip(origin, v.global_position, c, r.x - 8.0, _dim_col(col, active_cat, matches), 3.2)
 	for node in get_tree().get_nodes_in_group("aircraft"):
-		_blip(origin, (node as Node3D).global_position, c, r.x - 8.0, Color("9ad46a"), 4.0)
+		var jet := node as Node3D
+		if jet == null:
+			continue
+		_blip(origin, jet.global_position, c, r.x - 8.0, _dim_col(Color("9ad46a"), active_cat, active_cat == A11yRadar.Category.PLACES), 4.0)
+	for node in get_tree().get_nodes_in_group("world_pickups"):
+		var pk := node as Node3D
+		if pk == null or bool(pk.get("taken")):
+			continue
+		_blip(origin, pk.global_position, c, r.x - 8.0, _dim_col(Color("4ef08c"), active_cat, active_cat == A11yRadar.Category.LOOT), 2.4)
 	if game:
 		var city = game.get("city")
 		if city:
-			_blip(origin, city.gun_shop_pos, c, r.x - 8.0, Color("c45a2a"), 2.6)
-			_blip(origin, city.bar_pos, c, r.x - 8.0, Color("f0a030"), 2.6)
-			_blip(origin, city.base_pos, c, r.x - 8.0, Color("6dff88"), 3.0)
+			var pm := active_cat == A11yRadar.Category.PLACES
+			_blip(origin, city.gun_shop_pos, c, r.x - 8.0, _dim_col(Color("c45a2a"), active_cat, pm), 2.6)
+			_blip(origin, city.bar_pos, c, r.x - 8.0, _dim_col(Color("f0a030"), active_cat, pm), 2.6)
+			_blip(origin, city.base_pos, c, r.x - 8.0, _dim_col(Color("6dff88"), active_cat, pm), 3.0)
 	if game and game.has_method("radar_objective"):
 		var obj: Vector3 = game.radar_objective()
 		if obj != Vector3.ZERO:
-			_blip(origin, obj, c, r.x - 8.0, Color("5dff88"), 4.0)
+			_blip(origin, obj, c, r.x - 8.0, _dim_col(Color("5dff88"), active_cat, active_cat == A11yRadar.Category.OBJECTIVES), 4.0)
+	if has_locked:
+		var lpos := _blip_xy(origin, locked_pos, c, r.x - 8.0)
+		draw_line(c, lpos, Color("ffd166", 0.55), 1.5)
+		draw_arc(lpos, 6.2, 0.0, TAU, 20, Color("ffd166"), 1.8)
 	draw_colored_polygon([
 		c + Vector2(0, -7),
 		c + Vector2(5, 6),
@@ -63,31 +101,21 @@ func _draw() -> void:
 	], Color("f0e6c8"))
 
 
-func _blip(origin: Vector3, pos: Vector3, center: Vector2, radius: float, color: Color, size_px: float) -> void:
+func _blip_xy(origin: Vector3, pos: Vector3, center: Vector2, radius: float) -> Vector2:
 	var d := Vector2(pos.x - origin.x, pos.z - origin.z)
 	d = d / world_span * radius
 	if d.length() > radius:
 		d = d.limit_length(radius)
-	draw_circle(center + d, size_px, color)
-
-func _draw_match(manager: MatchManager, origin: Vector3, center: Vector2, radius_px: float) -> void:
-	var span := 180.0
-	if manager.zone:
-		var zone_center := center + Vector2(manager.zone.center.x - origin.x, manager.zone.center.z - origin.z) / span * radius_px
-		draw_arc(zone_center, manager.zone.radius / span * radius_px, 0, TAU, 64, Color("6be7df"), 1.5)
-	for member in manager.rules.participants.values():
-		if not member.alive:
-			continue
-		var at: Vector3 = member.position
-		var delta := Vector2(at.x - origin.x, at.z - origin.z) / span * radius_px
-		var color := MatchArena.team_color(member.team) if not manager.zone else Color("ff6a6a")
-		draw_circle(center + delta.limit_length(radius_px), 3, Color.WHITE if member.id == 0 else color)
-	for item: ObjectiveState in manager.rules.objectives.values():
-		if item.state in [ObjectiveState.Status.CAPTURED, ObjectiveState.Status.RETURNING]:
-			continue
-		var delta := Vector2(item.position.x - origin.x, item.position.z - origin.z) / span * radius_px
-		draw_circle(center + delta.limit_length(radius_px), 4, MatchArena.team_color(item.owner))
+	return center + d
 
 
-func _process(_delta: float) -> void:
-	queue_redraw()
+func _blip(origin: Vector3, pos: Vector3, center: Vector2, radius: float, color: Color, size_px: float) -> void:
+	draw_circle(_blip_xy(origin, pos, center, radius), size_px, color)
+
+func _process(delta: float) -> void:
+	if not visible:
+		return
+	_redraw_cd -= delta
+	if _redraw_cd <= 0.0:
+		_redraw_cd = 0.05
+		queue_redraw()

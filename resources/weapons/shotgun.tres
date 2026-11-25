@@ -2,7 +2,7 @@
 [ext_resource type="Script" path="res://scripts/weapon_data.gd" id="1"]
 [resource]
 script = ExtResource("1")
-label = "ESCOPETA"
+label = "SHOTGUN"
 damage = 15.0
 effective_range = 35.0
 falloff_start = 8.0

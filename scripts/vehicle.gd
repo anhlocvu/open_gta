@@ -44,7 +44,10 @@ var _head_mats: Array[StandardMaterial3D] = []
 var _tail_mats: Array[StandardMaterial3D] = []
 var _wheels: Array[Node3D] = []
 var _blink := 0.0
-var _night := true
+var _night := false
+var _horn_cd := 0.0
+var _screech_cd := 0.0
+var _last_headlights_on := false
 
 
 func setup(p_kind: Kind, spawn: Vector3, facing_y := 0.0) -> void:
@@ -99,11 +102,14 @@ func _ready() -> void:
 	_build_collision()
 	_build_mesh()
 	_build_near()
+	var clock := get_tree().get_first_node_in_group("day_night") as DayNight
+	apply_time(clock.is_night if clock else false)
 
 
 func apply_time(night: bool) -> void:
 	_night = night
 	var on := night or occupied
+	_last_headlights_on = on
 	if _head_l:
 		_head_l.visible = on
 		_head_r.visible = on
@@ -200,6 +206,8 @@ func _spot(pos: Vector3, color: Color) -> OmniLight3D:
 
 
 func _physics_process(delta: float) -> void:
+	_horn_cd = maxf(_horn_cd - delta, 0.0)
+	_screech_cd = maxf(_screech_cd - delta, 0.0)
 	if global_position.y < -0.05:
 		global_position.y = 0.16
 		velocity.y = 0.0
@@ -229,7 +237,7 @@ func _physics_process(delta: float) -> void:
 		throttle = 0.0
 	var handbrake := false
 	if occupied:
-		handbrake = Input.is_physical_key_pressed(KEY_SPACE)
+		handbrake = Input.is_action_pressed("jump") or Input.is_physical_key_pressed(KEY_SPACE)
 		var pads := get_tree().get_first_node_in_group("touch") as TouchControls
 		if pads and pads.handbrake:
 			handbrake = true
@@ -258,12 +266,17 @@ func _physics_process(delta: float) -> void:
 	velocity.z = forward.z * speed + right.z * slip
 	var before := speed
 	move_and_slide()
+	if occupied and handbrake and absf(speed) > 14.0 and _screech_cd <= 0.0:
+		_screech_cd = 0.55
+		_emit_vehicle_audio(&"screech", 0.7)
 	if get_slide_collision_count() > 0 and abs(before) > 10.0:
 		var head_on := 0.0
 		for i in get_slide_collision_count():
 			head_on = maxf(head_on, (-get_slide_collision(i).get_normal()).dot(forward))
 		if head_on > 0.62:
 			speed *= 0.84 if occupied else 0.68
+			if abs(before) > 15.0:
+				_emit_vehicle_audio(&"crash", clampf(absf(before) / 50.0, 0.2, 1.0))
 			if abs(before) > 22.0:
 				apply_damage(absf(before) * (0.22 if occupied else 1.4))
 				last_impact = absf(before)
@@ -275,7 +288,8 @@ func _physics_process(delta: float) -> void:
 	for m in _tail_mats:
 		m.emission_energy_multiplier = 5.5 if braking else (2.4 if _night else 0.7)
 
-	if occupied:
+	var want_lights := _night or occupied
+	if want_lights != _last_headlights_on:
 		apply_time(_night)
 
 	if kind == Kind.COP and _light_a:
@@ -290,14 +304,14 @@ func _physics_process(delta: float) -> void:
 
 
 func _player_input() -> Vector2:
-	var v := Vector2.ZERO
-	if Input.is_physical_key_pressed(KEY_A) or Input.is_physical_key_pressed(KEY_LEFT):
+	var v := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
+	if Input.is_physical_key_pressed(KEY_LEFT):
 		v.x -= 1
-	if Input.is_physical_key_pressed(KEY_D) or Input.is_physical_key_pressed(KEY_RIGHT):
+	if Input.is_physical_key_pressed(KEY_RIGHT):
 		v.x += 1
-	if Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_UP):
+	if Input.is_physical_key_pressed(KEY_UP):
 		v.y -= 1
-	if Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_DOWN):
+	if Input.is_physical_key_pressed(KEY_DOWN):
 		v.y += 1
 	var touch := get_tree().get_first_node_in_group("touch") as TouchControls
 	if touch:
@@ -327,10 +341,10 @@ func _ai_drive() -> Vector2:
 				next_i = graph.next_away(node_i, dest)
 			else:
 				next_i = graph.next_toward(node_i, dest, prev_i)
-		var close_chase := chase_target != null and global_position.distance_to(chase_target.global_position) < 18.0
+		var close_chase := is_instance_valid(chase_target) and global_position.distance_to(chase_target.global_position) < 18.0
 		if not close_chase:
 			dest = graph.nodes[next_i]
-		var ignore_light := chase_target != null or fleeing
+		var ignore_light := is_instance_valid(chase_target) or fleeing
 		if not graph.light_open(node_i, next_i, ignore_light) and global_position.distance_to(graph.nodes[next_i]) < 14.0:
 			return Vector2(0.0, -0.15)
 	var to := dest - global_position
@@ -359,6 +373,9 @@ func _ai_drive() -> Vector2:
 	car_q.exclude = [get_rid()]
 	var car := space.intersect_ray(car_q)
 	if car and not fleeing:
+		if _horn_cd <= 0.0 and randf() < 0.25:
+			_horn_cd = 3.5
+			_emit_vehicle_audio(&"horn", 0.8)
 		return Vector2(steer * 0.3, -0.2)
 	var throttle := 0.92 if dist > 10.0 else 0.45
 	if chase_target and dist < 6.0:
@@ -373,7 +390,7 @@ func _ai_destination() -> Vector3:
 		var ply := get_tree().get_first_node_in_group("player") as Node3D
 		if ply:
 			return global_position + (global_position - ply.global_position).normalized() * 24.0
-	if chase_target:
+	if is_instance_valid(chase_target):
 		var lead := Vector3.ZERO
 		if chase_target is CharacterBody3D:
 			lead = (chase_target as CharacterBody3D).velocity * 0.55
@@ -388,10 +405,12 @@ func _ai_destination() -> Vector3:
 func eject_driver() -> Pedestrian:
 	if not has_driver:
 		return null
+	var parent := get_parent()
+	if parent == null:
+		return null
 	has_driver = false
 	var ped := Pedestrian.new()
 	ped.is_officer = kind == Kind.COP
-	var parent := get_parent()
 	parent.add_child(ped)
 	ped.global_position = global_position + global_transform.basis.x * 1.9 + Vector3(0, 0.1, 0)
 	ped.scare(global_position)
@@ -407,3 +426,11 @@ func apply_damage(amount: float) -> void:
 func repair() -> void:
 	hp = 100.0
 	wrecked = false
+
+
+func _emit_vehicle_audio(kind_name: StringName, intensity := 1.0) -> void:
+	if not is_inside_tree():
+		return
+	var game := get_tree().current_scene
+	if game and game.get("a11y") and game.a11y and game.a11y.get("audio"):
+		game.a11y.audio.play_vehicle_event(kind_name, global_position, intensity)
