@@ -298,6 +298,21 @@ func add_ammo(rounds := 40) -> void:
 	ammo[weapon] = int(ammo.get(weapon, 0)) + rounds
 
 
+func add_ammo_for(id: int, rounds: int) -> void:
+	if id == Arsenal.Id.NONE or rounds <= 0:
+		return
+	ammo[id] = int(ammo.get(id, 0)) + rounds
+
+
+static func weapon_spoken_name(id: int) -> String:
+	match id:
+		Arsenal.Id.PISTOL: return "Pistol"
+		Arsenal.Id.SMG: return "SMG"
+		Arsenal.Id.RIFLE: return "Rifle"
+		Arsenal.Id.SHOTGUN: return "Shotgun"
+		_: return "Unarmed"
+
+
 func cycle_weapon(dir: int) -> void:
 	cancel_plate()
 	if owned_weapons.is_empty():

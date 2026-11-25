@@ -153,10 +153,19 @@ func resolve_locked_target(game: Node, origin: Vector3) -> Dictionary:
 					"civ": label = "Civilian Pedestrian"
 					"veh", "jet": label = str(n.get("display_name")) if n.get("display_name") != null else "Vehicle"
 					"ow_pk":
-						var pkind := int(n.get("kind"))
-						label = ["Health Pickup", "Cash Pickup", "Package Pickup"][clampi(pkind, 0, 2)]
+						label = _pickup_label(n)
 				return {"id": locked_target_id, "label": label, "category": Category.ALL, "position": n.global_position, "distance": origin.distance_to(n.global_position), "node": n}
 	return {}
+
+
+static func _pickup_label(pk: Node3D) -> String:
+	var pkind := int(pk.get("kind"))
+	match pkind:
+		0: return "Health Pickup"
+		1: return "Cash Pickup, $%d" % int(pk.get("amount"))
+		2: return "Package Pickup"
+		3: return "Weapon Pickup, %s" % Player.weapon_spoken_name(int(pk.get("weapon_id")))
+	return "Pickup"
 
 
 func _find_by_id(items: Array[Dictionary], id: String) -> int:
@@ -241,8 +250,7 @@ func _collect_open_world(game: Node, origin: Vector3, cat: int, out: Array[Dicti
 				var pk := node as Node3D
 				if pk == null or not is_instance_valid(pk) or bool(pk.get("taken")):
 					continue
-				var pkind := int(pk.get("kind"))
-				var plabel: String = ["Health Pickup", "Cash Pickup", "Package Pickup"][clampi(pkind, 0, 2)]
+				var plabel: String = _pickup_label(pk)
 				out.append({
 					"id": "ow_pk:%d" % pk.get_instance_id(),
 					"label": plabel,

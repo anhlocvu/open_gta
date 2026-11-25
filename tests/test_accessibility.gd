@@ -153,8 +153,29 @@ func run() -> void:
 	var ow_civs := a11y.radar.collect_targets(ow, ow.player.global_position, A11yRadar.Category.CIVILIANS)
 	check(ow_civs.size() > 0, "Civilians filter enumerates nearby pedestrians matching O Snap Aim")
 
-	# GTA-style combat: unarmed fire triggers punch; cycling weapons includes Unarmed (NONE)
+	# GTA-style combat: unarmed fire triggers punch; cycling weapons includes Unarmed (NONE) & speaks via NVDA
+	ow.player.owned_weapons.clear()
 	ow.player.select_weapon(Arsenal.Id.NONE)
+	var w_spoken: Array[String] = []
+	var w_cb := Callable()
+	if speech_ref:
+		w_cb = func(txt: String, _intr: bool, _prio: int) -> void: w_spoken.append(txt)
+		speech_ref.spoken.connect(w_cb)
+	w_spoken.clear()
+	var cycle_up_ev := InputEventKey.new()
+	cycle_up_ev.physical_keycode = KEY_EQUAL
+	cycle_up_ev.keycode = KEY_EQUAL
+	cycle_up_ev.pressed = true
+	ow._unhandled_input(cycle_up_ev)
+	check(w_spoken.size() > 0 and w_spoken[w_spoken.size() - 1].contains("No weapons"), "Pressing cycle weapon with no weapons speaks 'No weapons'")
+	w_spoken.clear()
+	var holster_ev := InputEventKey.new()
+	holster_ev.physical_keycode = KEY_0
+	holster_ev.keycode = KEY_0
+	holster_ev.pressed = true
+	ow._unhandled_input(holster_ev)
+	check(w_spoken.size() > 0 and w_spoken[w_spoken.size() - 1].contains("No weapons"), "Pressing holster with no weapons speaks 'No weapons'")
+
 	var fire_ev := InputEventKey.new()
 	fire_ev.physical_keycode = KEY_SEMICOLON
 	fire_ev.keycode = KEY_SEMICOLON
@@ -163,10 +184,17 @@ func run() -> void:
 	check(ow.player._punch_cd > 0.0, "Pressing fire while unarmed triggers punch")
 	ow.player.give_weapon(Arsenal.Id.PISTOL)
 	check(ow.player.weapon == Arsenal.Id.PISTOL, "Player holds Pistol after pickup")
-	ow.player.cycle_weapon(1)
+	await frames(2)
+	w_spoken.clear()
+	ow._unhandled_input(cycle_up_ev)
 	check(ow.player.weapon == Arsenal.Id.NONE, "Cycling past last weapon returns to Unarmed (Fists)")
-	ow.player.cycle_weapon(1)
+	check(w_spoken.size() > 0 and w_spoken[w_spoken.size() - 1].contains("Unarmed"), "Cycling to Unarmed speaks 'Unarmed'")
+	w_spoken.clear()
+	ow._unhandled_input(cycle_up_ev)
 	check(ow.player.weapon == Arsenal.Id.PISTOL, "Cycling forward from Unarmed selects first owned weapon")
+	check(w_spoken.size() > 0 and w_spoken[w_spoken.size() - 1].contains("Pistol"), "Cycling to Pistol speaks 'Pistol'")
+	if speech_ref and w_cb.is_valid() and speech_ref.spoken.is_connected(w_cb):
+		speech_ref.spoken.disconnect(w_cb)
 
 	# Snap Turn & Level Horizon (even when Snap Turn disabled)
 	var yaw_before: float = ow.camera.yaw

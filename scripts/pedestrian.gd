@@ -4,6 +4,7 @@ extends CharacterBody3D
 const Models = preload("res://scripts/models.gd")
 
 enum Mood { WALK, WAIT, LOOK, FLEE, COWER, CHASE, DOWN }
+enum WealthTier { POOR, MIDDLE, WEALTHY, RICH }
 
 const WALK_SPEED := 1.65
 const FLEE_SPEED := 5.6
@@ -14,6 +15,9 @@ var mood: Mood = Mood.WALK
 var downed := false
 var is_officer := false
 var vitality := HealthComponent.new()
+var wealth_tier: WealthTier = WealthTier.MIDDLE
+var cash_dropped := false
+var loot_weapon_id: int = Arsenal.Id.NONE
 
 var _down_t := 0.0
 var _wait_t := 0.0
@@ -40,6 +44,7 @@ func _ready() -> void:
 	add_to_group("peds")
 	if is_officer:
 		add_to_group("foot_cops")
+	_assign_loot_profile()
 	collision_layer = 16
 	collision_mask = 1 | 4 | 8
 	floor_snap_length = 0.25
@@ -53,6 +58,52 @@ func _ready() -> void:
 	_mesh()
 
 
+func _assign_loot_profile() -> void:
+	var roll := randf()
+	if is_officer:
+		if roll < 0.50:
+			wealth_tier = WealthTier.MIDDLE
+		elif roll < 0.85:
+			wealth_tier = WealthTier.WEALTHY
+		else:
+			wealth_tier = WealthTier.RICH
+		var officer_weapons := [Arsenal.Id.PISTOL, Arsenal.Id.SMG, Arsenal.Id.RIFLE, Arsenal.Id.SHOTGUN]
+		loot_weapon_id = int(officer_weapons[randi() % officer_weapons.size()])
+	else:
+		if roll < 0.45:
+			wealth_tier = WealthTier.POOR
+		elif roll < 0.80:
+			wealth_tier = WealthTier.MIDDLE
+		elif roll < 0.95:
+			wealth_tier = WealthTier.WEALTHY
+		else:
+			wealth_tier = WealthTier.RICH
+
+
+func roll_cash_drop() -> int:
+	match wealth_tier:
+		WealthTier.POOR:
+			return randi_range(30, 350)
+		WealthTier.MIDDLE:
+			return randi_range(400, 3500)
+		WealthTier.WEALTHY:
+			return randi_range(4000, 25000)
+		WealthTier.RICH:
+			return randi_range(30000, 100000)
+	return randi_range(30, 350)
+
+
+func wealth_label() -> String:
+	if is_officer:
+		return "Officer"
+	match wealth_tier:
+		WealthTier.POOR: return "Poor civilian"
+		WealthTier.MIDDLE: return "Civilian"
+		WealthTier.WEALTHY: return "Wealthy civilian"
+		WealthTier.RICH: return "Rich civilian"
+	return "Civilian"
+
+
 func knock_down() -> void:
 	if downed:
 		return
@@ -61,6 +112,18 @@ func knock_down() -> void:
 	_down_t = 7.0 if not is_officer else 3.2
 	rotation.z = 1.15
 	_emit_npc_audio(true)
+	_emit_loot_drop()
+
+
+func _emit_loot_drop() -> void:
+	if cash_dropped:
+		return
+	cash_dropped = true
+	if not is_inside_tree():
+		return
+	var game := get_tree().current_scene
+	if game and game.has_method("on_pedestrian_knocked_down"):
+		game.on_pedestrian_knocked_down(self)
 
 func take_damage(amount: float, region_multiplier := 1.0) -> void:
 	vitality.apply_damage(amount, region_multiplier)

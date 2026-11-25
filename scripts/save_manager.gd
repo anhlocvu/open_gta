@@ -15,13 +15,11 @@ static func _is_safe_user_path(path: String) -> bool:
 
 
 static func has_save(path := DEFAULT_PATH) -> bool:
-	if not _is_safe_user_path(path):
-		return false
-	return FileAccess.file_exists(path) or FileAccess.file_exists(path + ".bak")
+	return not peek_summary(path).is_empty()
 
 
 static func save_data(data: Dictionary, path := DEFAULT_PATH) -> bool:
-	if data.is_empty() or not _is_safe_user_path(path):
+	if data.is_empty() or not _is_safe_user_path(path) or not (data.get("player") is Dictionary):
 		return false
 	var payload := data.duplicate(true)
 	payload["version"] = SCHEMA_VERSION
@@ -29,29 +27,37 @@ static func save_data(data: Dictionary, path := DEFAULT_PATH) -> bool:
 	payload["saved_text"] = Time.get_datetime_string_from_system(false, true)
 	var json_text := JSON.stringify(payload, "\t")
 	var tmp_path := path + ".tmp"
+	var abs_path := ProjectSettings.globalize_path(path)
+	var abs_bak := ProjectSettings.globalize_path(path + ".bak")
+	var abs_tmp := ProjectSettings.globalize_path(tmp_path)
+	if FileAccess.file_exists(tmp_path):
+		DirAccess.remove_absolute(abs_tmp)
 	var tmp_file := FileAccess.open(tmp_path, FileAccess.WRITE)
 	if tmp_file == null:
 		return false
 	tmp_file.store_string(json_text)
 	var write_err := tmp_file.get_error()
 	tmp_file.close()
-	if write_err != OK:
+	if write_err != OK or _read_json_dict(tmp_path).is_empty():
 		if FileAccess.file_exists(tmp_path):
-			DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp_path))
+			DirAccess.remove_absolute(abs_tmp)
 		return false
-	var abs_path := ProjectSettings.globalize_path(path)
-	var abs_bak := ProjectSettings.globalize_path(path + ".bak")
-	var abs_tmp := ProjectSettings.globalize_path(tmp_path)
 	if FileAccess.file_exists(path) and not _read_json_dict(path).is_empty():
+		if FileAccess.file_exists(path + ".bak"):
+			DirAccess.remove_absolute(abs_bak)
 		var copy_err := DirAccess.copy_absolute(abs_path, abs_bak)
 		if copy_err != OK:
 			DirAccess.remove_absolute(abs_tmp)
 			return false
+	if FileAccess.file_exists(path):
+		DirAccess.remove_absolute(abs_path)
 	var rename_err := DirAccess.rename_absolute(abs_tmp, abs_path)
 	if rename_err != OK:
+		var fallback_err := DirAccess.copy_absolute(abs_tmp, abs_path)
 		if FileAccess.file_exists(tmp_path):
 			DirAccess.remove_absolute(abs_tmp)
-		return false
+		if fallback_err != OK or _read_json_dict(path).is_empty():
+			return false
 	return true
 
 

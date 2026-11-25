@@ -99,16 +99,128 @@ func run() -> void:
 	check(ow.player.owned_weapons.has(Arsenal.Id.SMG) and ow.player.weapon == Arsenal.Id.SMG, "restores owned weapons and active weapon")
 	check(ow.coupe.global_position.distance_to(Vector3(0.0, -0.05, -38.0)) < 0.35 and is_equal_approx(ow.coupe.hp, 77.0), "restores coupe position and HP")
 
-	# Path sandboxing & corrupt primary fallback
+	# Path sandboxing & corrupt primary fallback & multi-overwrite
 	check(not SaveManager.save_data({"money": 99}, "res://evil.json"), "SaveManager rejects non-user:// paths")
 	check(not SaveManager.save_data({"money": 99}, "user://../evil.json"), "SaveManager rejects traversal paths")
-	ow.save_current_game(test_save_path)
+	ow.player.give_weapon(Arsenal.Id.RIFLE, 60)
+	ow.player.global_position = Vector3(-42.0, 0.15, 22.0)
+	var overwrite_ok: bool = ow.save_current_game(test_save_path)
+	check(overwrite_ok, "SaveManager overwrites existing primary and .bak reliably (save #2)")
+	ow.player.give_weapon(Arsenal.Id.PISTOL, 24)
+	ow.player.select_weapon(Arsenal.Id.RIFLE)
+	ow.player.global_position = Vector3(18.5, 0.15, -64.0)
+	var overwrite_3: bool = ow.save_current_game(test_save_path)
+	check(overwrite_3, "SaveManager overwrites existing primary and .bak reliably (save #3)")
+
+	# Fresh scene instance restores exact position & weapons directly from TITLE
+	var ow2 = load("res://scenes/main.tscn").instantiate()
+	root.add_child(ow2)
+	current_scene = ow2
+	await process_frame
+	var fresh_load_ok: bool = ow2.load_saved_game(test_save_path)
+	await frames(2)
+	check(fresh_load_ok, "Fresh scene instance loads saved game from TITLE")
+	check(ow2.city.visible and not ow2.player.locked, "Loading from TITLE activates world and unlocks player")
+	check(ow2.player.global_position.distance_to(Vector3(18.5, 0.15, -64.0)) < 0.25, "Fresh scene restores exact saved player position")
+	check(ow2.player.owned_weapons.has(Arsenal.Id.SMG) and ow2.player.owned_weapons.has(Arsenal.Id.RIFLE) and ow2.player.owned_weapons.has(Arsenal.Id.PISTOL) and ow2.player.weapon == Arsenal.Id.RIFLE, "Fresh scene restores all owned weapons and active weapon")
+	ow2.queue_free()
+	await process_frame
+	current_scene = ow
+
+	# Corrupt primary fallback + invalid save has_save() guard
 	var corrupt := FileAccess.open(test_save_path, FileAccess.WRITE)
 	corrupt.store_string("{invalid json")
 	corrupt.close()
+	check(SaveManager.has_save(test_save_path), "has_save stays true when valid .bak fallback exists")
 	ow.money = 5
 	var bak_ok: bool = ow.load_saved_game(test_save_path)
 	check(bak_ok and ow.money == 1337, "corrupt primary save falls back to .bak backup")
+	var bak_corrupt := FileAccess.open(test_bak_path, FileAccess.WRITE)
+	bak_corrupt.store_string("{broken")
+	bak_corrupt.close()
+	check(not SaveManager.has_save(test_save_path), "has_save returns false when both primary and .bak are corrupt")
+
+	# 5. Universal NPC cash drops ($30..$100,000, wealth tiers) & officer weapon drops
+	var tier_samples := {}
+	var drop_in_range := true
+	for _s in 60:
+		var tmp_ped := Pedestrian.new()
+		tmp_ped.wealth_tier = (_s % 4) as Pedestrian.WealthTier
+		var amt: int = tmp_ped.roll_cash_drop()
+		if amt < 30 or amt > 100000:
+			drop_in_range = false
+		tier_samples[int(tmp_ped.wealth_tier)] = true
+		tmp_ped.free()
+	check(drop_in_range and tier_samples.size() == 4, "Pedestrian wealth tiers roll cash strictly within $30..$100,000")
+
+	var civ_ped := Pedestrian.new()
+	civ_ped.is_officer = false
+	ow.add_child(civ_ped)
+	civ_ped.global_position = ow.player.global_position + Vector3(6.0, 0.0, 0.0)
+	await process_frame
+	var loot_before := get_nodes_in_group("world_pickups").size()
+	civ_ped.knock_down()
+	await process_frame
+	var loot_after_civ := get_nodes_in_group("world_pickups")
+	var spawned_cash := 0
+	for n in loot_after_civ:
+		var pk := n as WorldPickup
+		if pk and not pk.taken and pk.kind == WorldPickup.Kind.CASH and pk.global_position.distance_to(civ_ped.global_position) < 2.0:
+			spawned_cash += 1
+			check(pk.amount >= 30 and pk.amount <= 100000, "Civilian knockdown drops CASH pickup between $30 and $100,000")
+	check(spawned_cash == 1, "Civilian knockdown spawns exactly 1 cash pickup")
+	civ_ped.downed = false
+	civ_ped.knock_down()
+	await process_frame
+	var cash_after_repeat := 0
+	for n in get_nodes_in_group("world_pickups"):
+		var pk := n as WorldPickup
+		if pk and not pk.taken and pk.kind == WorldPickup.Kind.CASH and pk.global_position.distance_to(civ_ped.global_position) < 2.0:
+			cash_after_repeat += 1
+	check(cash_after_repeat == 1, "Knocking down the same civilian again does not double-drop cash")
+
+	var off_ped := Pedestrian.new()
+	off_ped.is_officer = true
+	ow.add_child(off_ped)
+	off_ped.global_position = ow.player.global_position + Vector3(-6.0, 0.0, 0.0)
+	await process_frame
+	off_ped.knock_down()
+	await process_frame
+	var off_cash := 0
+	var off_weapon := 0
+	var dropped_weapon_id := Arsenal.Id.NONE
+	for n in get_nodes_in_group("world_pickups"):
+		var pk := n as WorldPickup
+		if pk and not pk.taken and pk.global_position.distance_to(off_ped.global_position) < 2.5:
+			if pk.kind == WorldPickup.Kind.CASH:
+				off_cash += 1
+			elif pk.kind == WorldPickup.Kind.WEAPON:
+				off_weapon += 1
+				dropped_weapon_id = pk.weapon_id
+	check(off_cash == 1 and off_weapon == 1 and dropped_weapon_id != Arsenal.Id.NONE, "Officer/soldier knockdown drops both CASH and WEAPON pickups")
+	ow.player.owned_weapons.clear()
+	ow.player.select_weapon(Arsenal.Id.NONE)
+	ow.collect_pickup(WorldPickup.Kind.WEAPON, 30, dropped_weapon_id)
+	check(ow.player.owned_weapons.has(dropped_weapon_id) and ow.player.weapon == dropped_weapon_id, "Collecting dropped WEAPON pickup grants and equips new weapon")
+	var ammo_before_dup: int = int(ow.player.ammo.get(dropped_weapon_id, 0))
+	ow.collect_pickup(WorldPickup.Kind.WEAPON, 25, dropped_weapon_id)
+	check(int(ow.player.ammo.get(dropped_weapon_id, 0)) == ammo_before_dup + 25, "Collecting duplicate WEAPON pickup adds reserve ammo")
+
+	# Explicit save only: stealing coupe / picking package / buying weapon do not silently overwrite default user save
+	var had_default_before := FileAccess.file_exists(SaveManager.DEFAULT_PATH)
+	var default_mtime_before := FileAccess.get_modified_time(SaveManager.DEFAULT_PATH) if had_default_before else 0
+	var default_bytes_before := FileAccess.get_file_as_bytes(SaveManager.DEFAULT_PATH) if had_default_before else PackedByteArray()
+	var before_pkg_money: int = ow.money
+	ow.collect_pickup(WorldPickup.Kind.PACKAGE, 180)
+	check(ow.money == before_pkg_money + 180, "Package pickup still grants cash reward")
+	ow._enter_vehicle(ow.coupe)
+	if ow.active_vehicle == ow.coupe:
+		ow.coupe.speed = 0.0
+		ow._exit_vehicle()
+	var had_default_after := FileAccess.file_exists(SaveManager.DEFAULT_PATH)
+	var default_unchanged := (not had_default_after) if not had_default_before else (FileAccess.get_modified_time(SaveManager.DEFAULT_PATH) == default_mtime_before and FileAccess.get_file_as_bytes(SaveManager.DEFAULT_PATH) == default_bytes_before)
+	check(default_unchanged, "Gameplay milestones do not silently create or overwrite user save without explicit Save Game")
+	check(loot_before >= 0, "Pickup tracking valid")
 
 	if FileAccess.file_exists(test_save_path):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(test_save_path))

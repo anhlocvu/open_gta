@@ -1,3 +1,6 @@
+##rules
+
+bắt buộc luôn luôn kích hoạt các skill godot master và các skill về godot, các skill về trợ năng và audio game, để người dùng ra ý tưởng không cần phải yêu cầu kích hoạt
 # Project Development Log (`GEMINI.md`)
 
 ## Session: 2026-11-25 — End-to-End NVDA Accessibility System & English Localization
@@ -156,3 +159,37 @@ Implemented full keyboard parity for mouse actions (with GTA-style unarmed punch
 - `tests/test_game_integration.gd`: 14 checks, 0 failures
 - `tests/test_harbor_feel.gd`: 13 checks, 0 failures
 - Total headless verified: **202 checks, 0 failures**.
+
+
+## Session: 2026-11-26 — Save/Load Reliability, Weapon Switch NVDA Speech & Universal NPC Loot Drops
+
+### Summary
+Fixed explicit Save/Load persistence and `CONTINUE GAME` visibility, added immediate NVDA announcements when switching or checking weapons (including `"No weapons."`), and implemented tiered cash drops (`$30`–`$100,000`) for all NPCs plus weapon drops when knocking down police officers and soldiers, governed by SpecKit (`specs/004-save-weapon-speech-loot/`) and ECC TDD.
+
+### Key Changes
+- **Explicit Save/Load & Windows Overwrite Fix (`scripts/save_manager.gd`, `scripts/game.gd`, `scripts/hud.gd`)**:
+  - Removed silent milestone auto-saves from `return_to_main_menu()`, `_enter_vehicle()`, `_buy_weapon()`, `_update_mission()`, and `collect_pickup()`, so `user://open_world_save.json` is written only when the player explicitly chooses `SAVE GAME`.
+  - Updated `SaveManager.has_save()` to validate via `not peek_summary(path).is_empty()` and hardened `SaveManager.save_data()` on Windows (verify `.tmp` parse before swapping, remove stale `.bak`/primary cleanly before backup/rename with copy fallback, and surface `"SAVE FAILED"` via HUD/NVDA if saving ever fails).
+  - Extracted `Game._enter_gameplay_from_title()` and added `set_paused(on, silent := false)` so `begin_saved()` / `load_saved_game()` restore exact `player.global_position` (clearing velocity and calling `force_update_transform()`), `owned_weapons`, `weapon`, `ammo`, and `magazines` without `"Free Chaos started..."` or `"Resumed."` interrupting `"Saved game loaded..."`.
+- **Weapon Switch NVDA Speech (`scripts/accessibility/a11y_gameplay_controller.gd`, `scripts/player.gd`, `scripts/game.gd`)**:
+  - Added `Player.weapon_spoken_name()` and `A11yGameplayController.announce_weapon_switch()` (`force = true`, `interrupt = true`, syncing `_prev_weapon`) wired directly into `cycle_weapon_up`, `cycle_weapon_down`, `weapon_holster`, and non-shop `weapon_1`..`weapon_4`.
+  - Speaks `"No weapons."` when `owned_weapons` is empty, `"No <Weapon>."` when selecting an unowned slot, `"Unarmed, fists."` when holstered, or `"<Weapon>, <mag> in mag, <reserve> reserve."` when armed.
+- **Universal Cash & Officer Weapon Drops (`scripts/pedestrian.gd`, `scripts/pickup.gd`, `scripts/game.gd`, `scripts/accessibility/a11y_spatial_audio.gd`, `scripts/accessibility/a11y_radar.gd`)**:
+  - Added `Pedestrian.WealthTier` (`POOR`: `$30–$350`, `MIDDLE`: `$400–$3,500`, `WEALTHY`: `$4,000–$25,000`, `RICH`: `$30,000–$100,000`), one-time `cash_dropped` guard, and `loot_weapon_id` for `is_officer` units.
+  - Added `WorldPickup.Kind.WEAPON`, `despawn_seconds` (60s for temporary combat drops), `Player.add_ammo_for()`, 3D `A11ySpatialAudio.play_loot_drop()`, and `A11yRadar` labels (`Cash Pickup, $N` and `Weapon Pickup, <Name>`).
+  - Knocking down any pedestrian spawns a `CASH` pickup; knocking down an officer/soldier additionally spawns a `WEAPON` pickup (granting new weapons or reserve ammo if already owned) with NVDA drop announcements.
+
+### Verified Checks (Post-Final-Edit)
+- `tests/test_accessibility_speech.gd`: 20 checks, 0 failures
+- `tests/test_accessibility.gd`: 62 checks, 0 failures
+- `tests/test_save_and_audio.gd`: 41 checks, 0 failures
+- `tests/test_stage_one.gd`: 24 checks, 0 failures
+- `tests/test_combat.gd`: 40 checks, 0 failures
+- `tests/test_cover.gd`: 10 checks, 0 failures
+- `tests/test_game_integration.gd`: 14 checks, 0 failures
+- `tests/test_harbor_feel.gd`: 13 checks, 0 failures
+- Total headless verified: **224 checks, 0 failures**.
+- **Windows Release Export**:
+  - Exported `export/windows/OperationChaos.exe` (`109,149,184` bytes), `export/windows/OperationChaos.pck` (`114,835,916` bytes), `export/windows/libgdnvda.windows.template_release.x86_64.dll` (`559,104` bytes), and `export/windows/nvdaControllerClient64.dll` (`265,632` bytes).
+  - Verified `OperationChaos.exe --headless --quit-after 5` exits cleanly (`exit code 0`).
+- Note: Interactive gameplay with live Windows `NVDA.exe` speech output and real audio hardware listening remains to be manually verified by the user.

@@ -84,11 +84,11 @@ func show_start(on: bool) -> void:
 	if _menu_col: _menu_col.visible = true
 	if _settings_scroll: _settings_scroll.visible = false
 	if _settings_content: _settings_content.visible = false
-	var has_save := SaveManager.has_save()
+	var sum := SaveManager.peek_summary()
+	var has_save := not sum.is_empty()
 	if _continue_btn:
 		_continue_btn.visible = on and has_save
 		if has_save:
-			var sum := SaveManager.peek_summary()
 			_continue_btn.text = "CONTINUE GAME  ·  $%d  (%d PACKAGES LEFT)" % [int(sum.get("money", 420)), int(sum.get("packages_left", 3))]
 	if _resume_btn: _resume_btn.visible = false
 	if _save_btn: _save_btn.visible = false
@@ -111,7 +111,7 @@ func show_start(on: bool) -> void:
 		A11yUIHelper.release_focus_safe(get_viewport())
 
 
-func show_pause(on: bool) -> void:
+func show_pause(on: bool, silent := false) -> void:
 	_in_pause = on
 	_start_panel.visible = on
 	if _menu_col: _menu_col.visible = true
@@ -135,11 +135,13 @@ func show_pause(on: bool) -> void:
 	if _speed: _speed.visible = not on
 	if _district: _district.visible = not on
 	if on and _resume_btn:
-		A11yUIHelper.say("Game paused.", true, 3, &"ui_screen", true)
+		if not silent:
+			A11yUIHelper.say("Game paused.", true, 3, &"ui_screen", true)
 		A11yUIHelper.grab_focus_safe(_resume_btn)
 	elif not on:
 		A11yUIHelper.release_focus_safe(get_viewport())
-		A11yUIHelper.say("Resumed.", true, 2, &"ui_screen", true)
+		if not silent:
+			A11yUIHelper.say("Resumed.", true, 2, &"ui_screen", true)
 
 
 func set_objective(text: String) -> void:
@@ -412,7 +414,7 @@ func _build() -> void:
 		var g := _game()
 		if g and g.has_method("return_to_main_menu"): g.return_to_main_menu())
 	_menu_col.add_child(_main_menu_btn)
-	A11yUIHelper.wire_button(_main_menu_btn, "Save and return to main menu")
+	A11yUIHelper.wire_button(_main_menu_btn, "Return to main menu without saving")
 
 	_quit_btn = _mode_button("QUIT")
 	_quit_btn.pressed.connect(func() -> void: get_tree().quit())

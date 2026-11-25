@@ -157,13 +157,30 @@ func _process(delta: float) -> void:
 	_tick_open_world_cues(player, settings)
 
 
+func announce_weapon_switch(player: Player, requested_id := -1) -> void:
+	if player == null:
+		return
+	_prev_weapon = player.weapon
+	if player.owned_weapons.is_empty():
+		A11yUIHelper.say("No weapons.", true, 2, &"a11y_weapon", true)
+		return
+	if requested_id > Arsenal.Id.NONE and not player.owned_weapons.has(requested_id):
+		A11yUIHelper.say("No %s." % Player.weapon_spoken_name(requested_id), true, 2, &"a11y_weapon", true)
+		return
+	if player.weapon == Arsenal.Id.NONE:
+		A11yUIHelper.say("Unarmed, fists.", true, 2, &"a11y_weapon", true)
+		return
+	var wname := Player.weapon_spoken_name(player.weapon)
+	A11yUIHelper.say("%s, %d in mag, %d reserve." % [wname, int(player.magazines.get(player.weapon, 0)), int(player.ammo.get(player.weapon, 0))], true, 2, &"a11y_weapon", true)
+
+
 func _tick_player_cues(player: Player) -> void:
 	if player.weapon != _prev_weapon:
 		if _prev_weapon != -1:
 			if player.weapon == Arsenal.Id.NONE:
-				A11yUIHelper.say("Unarmed, fists", true, 2, &"a11y_weapon")
+				A11yUIHelper.say("Unarmed, fists.", true, 2, &"a11y_weapon", true)
 			else:
-				A11yUIHelper.say("%s, %d in mag, %d reserve" % [Arsenal.data(player.weapon).label, int(player.magazines.get(player.weapon, 0)), int(player.ammo.get(player.weapon, 0))], true, 2, &"a11y_weapon")
+				A11yUIHelper.say("%s, %d in mag, %d reserve." % [Player.weapon_spoken_name(player.weapon), int(player.magazines.get(player.weapon, 0)), int(player.ammo.get(player.weapon, 0))], true, 2, &"a11y_weapon", true)
 		_prev_weapon = player.weapon
 	var reloading := player.reload_remaining > 0.0
 	if reloading and not _prev_reload:

@@ -245,6 +245,10 @@ func play_shop_cue() -> void:
 	_play_ui(_wav_shop_chime, -7.0, 1.0, "SFX")
 
 
+func play_loot_drop(pos: Vector3, has_weapon := false) -> void:
+	_play_3d(_wav_shop_chime if has_weapon else _wav_pickup, pos, -5.0, 1.25 if has_weapon else 1.05, 8.0, "SFX")
+
+
 func play_hit_confirm(armored: bool, broken: bool, headshot: bool) -> void:
 	if headshot:
 		_play_ui(_wav_headshot, -5.0, 1.0, "A11y")

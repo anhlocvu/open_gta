@@ -206,7 +206,7 @@ func _set_world_active(active: bool) -> void:
 				if n is Node:
 					(n as Node).process_mode = mode
 
-func set_paused(on: bool) -> void:
+func set_paused(on: bool, silent := false) -> void:
 	if phase == Phase.TITLE:
 		paused = false
 		return
@@ -223,7 +223,7 @@ func set_paused(on: bool) -> void:
 		if on and a11y:
 			a11y.nav.stop_autowalk(player)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if (on or phase in [Phase.TITLE, Phase.BUSTED, Phase.WASTED] or DisplayServer.is_touchscreen_available()) else Input.MOUSE_MODE_CAPTURED
-	hud.show_pause(on)
+	hud.show_pause(on, silent)
 
 func toggle_pause() -> void:
 	set_paused(not paused)
@@ -415,15 +415,18 @@ func _spawn_pickups() -> void:
 func begin_saved() -> void:
 	if phase != Phase.TITLE:
 		return
-	begin()
+	if not SaveManager.has_save():
+		begin()
+		A11yUIHelper.say("No valid saved game found. Starting new game.", true, 2, &"a11y_save", true)
+		return
+	_enter_gameplay_from_title()
 	if not load_saved_game():
-		A11yUIHelper.say("No valid saved game found. Starting new game.", true, 2, &"a11y_save")
+		_sync_hud()
+		A11yUIHelper.say("No valid saved game found. Starting new game.", true, 2, &"a11y_save", true)
 
 
 func return_to_main_menu() -> void:
-	if phase in [Phase.STEAL, Phase.HEAT, Phase.DELIVER, Phase.FREE]:
-		save_current_game()
-	set_paused(false)
+	set_paused(false, true)
 	if is_inside_tree():
 		get_tree().reload_current_scene()
 
@@ -583,8 +586,12 @@ func apply_saved_state(data: Dictionary) -> bool:
 
 	var pdata: Dictionary = data.get("player", {}) if data.get("player") is Dictionary else {}
 	player.reset_combat()
-	player.global_position = SaveManager.array_to_vec3(pdata.get("pos"), city.player_spawn)
+	var saved_pos := SaveManager.array_to_vec3(pdata.get("pos"), city.player_spawn)
+	saved_pos.y = maxf(saved_pos.y, 0.05)
+	player.velocity = Vector3.ZERO
+	player.global_position = saved_pos
 	player.rotation.y = _safe_float(pdata.get("rot_y"), 0.0, -TAU * 4.0, TAU * 4.0)
+	player.force_update_transform()
 	player.health = _safe_float(pdata.get("health"), 100.0, 1.0, 100.0)
 	player.stamina = _safe_float(pdata.get("stamina"), 100.0, 0.0, 100.0)
 	player.vitality.armor = _safe_float(pdata.get("armor"), 0.0, 0.0, 150.0)
@@ -651,6 +658,7 @@ func apply_saved_state(data: Dictionary) -> bool:
 
 	if a11y:
 		a11y.reset_state()
+		a11y._prev_weapon = player.weapon
 		a11y.sync_wanted(heat.stars if heat else 0)
 	_sync_hud()
 	return true
@@ -663,6 +671,9 @@ func save_current_game(path := SaveManager.DEFAULT_PATH) -> bool:
 	if ok:
 		_flash_banner("GAME SAVED", 1.4)
 		A11yUIHelper.say("Game saved.", true, 2, &"a11y_save", true)
+	else:
+		_flash_banner("SAVE FAILED", 1.6)
+		A11yUIHelper.say("Save failed.", true, 3, &"a11y_save", true)
 	return ok
 
 
@@ -671,16 +682,18 @@ func load_saved_game(path := SaveManager.DEFAULT_PATH) -> bool:
 	if data.is_empty():
 		return false
 	if phase == Phase.TITLE:
-		begin()
+		_enter_gameplay_from_title()
 	var ok := apply_saved_state(data)
 	if ok:
-		set_paused(false)
+		set_paused(false, true)
 		_flash_banner("GAME LOADED", 1.4)
-		A11yUIHelper.say("Saved game loaded. Cash %d dollars." % money, true, 2, &"a11y_save", true)
+		var dname := district_name(_tracked().global_position)
+		var w_desc := "Unarmed" if player.weapon == Arsenal.Id.NONE else Player.weapon_spoken_name(player.weapon)
+		A11yUIHelper.say("Saved game loaded in %s. Cash %d dollars. Equipped %s." % [dname, money, w_desc], true, 2, &"a11y_save", true)
 	return ok
 
 
-func begin() -> void:
+func _enter_gameplay_from_title() -> void:
 	if phase != Phase.TITLE:
 		return
 	phase = Phase.STEAL
@@ -690,6 +703,12 @@ func begin() -> void:
 	hud.show_start(false)
 	if not DisplayServer.is_touchscreen_available():
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+func begin() -> void:
+	if phase != Phase.TITLE:
+		return
+	_enter_gameplay_from_title()
 	_sync_hud()
 	A11yUIHelper.say("Free Chaos started. Objective: Steal the amber coupe. Press Z for status, B and Period to scan radar, Slash for help.", true, 3, &"a11y_ow_start")
 
@@ -751,10 +770,13 @@ func _unhandled_input(event: InputEvent) -> void:
 		_firing = false
 	if _action_pressed(event, &"cycle_weapon_up"):
 		player.cycle_weapon(1)
+		if a11y: a11y.announce_weapon_switch(player)
 	if _action_pressed(event, &"cycle_weapon_down"):
 		player.cycle_weapon(-1)
+		if a11y: a11y.announce_weapon_switch(player)
 	if _action_pressed(event, &"weapon_holster"):
 		player.select_weapon(Arsenal.Id.NONE)
+		if a11y: a11y.announce_weapon_switch(player, Arsenal.Id.NONE)
 	if _action_pressed(event, &"weapon_1"):
 		_weapon_or_buy(Arsenal.Id.PISTOL)
 	elif _action_pressed(event, &"weapon_2"):
@@ -901,7 +923,6 @@ func _enter_vehicle(v: Vehicle) -> void:
 		v.stolen = true
 		_report("jack_mission", v.global_position)
 		phase = Phase.HEAT
-		save_current_game()
 	elif v.kind == Vehicle.Kind.COP:
 		_report("jack_cop", v.global_position)
 	elif v.kind == Vehicle.Kind.PARKED:
@@ -991,6 +1012,8 @@ func _weapon_or_buy(id: int) -> void:
 		_buy_weapon(id)
 	else:
 		player.select_weapon(id)
+		if a11y:
+			a11y.announce_weapon_switch(player, id)
 
 
 func _buy_weapon(id: int) -> void:
@@ -1006,7 +1029,6 @@ func _buy_weapon(id: int) -> void:
 	player.give_weapon(id)
 	if a11y and a11y.audio: a11y.audio.play_shop_cue()
 	_flash_banner("%s  -$%d" % [spec["name"], price], 1.5)
-	save_current_game()
 
 
 func _buy_ammo() -> void:
@@ -1270,7 +1292,6 @@ func _update_mission() -> void:
 		player.locked = false
 		if sfx: sfx.play_stinger()
 		_flash_banner("DROP COMPLETE  +$800", 2.4)
-		save_current_game()
 
 
 func _check_services() -> void:
@@ -1360,7 +1381,30 @@ func _respawn() -> void:
 	A11yUIHelper.say("Respawned. Health restored.", true, 2, &"a11y_respawn")
 
 
-func collect_pickup(kind: int, amount: int) -> void:
+func on_pedestrian_knocked_down(ped: Pedestrian) -> void:
+	if phase == Phase.TITLE or ped == null or not is_instance_valid(ped):
+		return
+	var base_y := maxf(ped.global_position.y, 0.0) + 0.1
+	var cash_amt := clampi(ped.roll_cash_drop(), 30, 100000)
+	var cash_pk := WorldPickup.new()
+	add_child(cash_pk)
+	cash_pk.setup(WorldPickup.Kind.CASH, Vector3(ped.global_position.x + 0.55, base_y, ped.global_position.z + 0.35), cash_amt, Arsenal.Id.NONE, 60.0)
+	if ped.is_officer:
+		var w_id: int = ped.loot_weapon_id if ped.loot_weapon_id != Arsenal.Id.NONE else Arsenal.Id.RIFLE
+		var rounds := int(Arsenal.spec(w_id)["ammo"])
+		var w_pk := WorldPickup.new()
+		add_child(w_pk)
+		w_pk.setup(WorldPickup.Kind.WEAPON, Vector3(ped.global_position.x - 0.55, base_y, ped.global_position.z - 0.35), rounds, w_id, 60.0)
+		if a11y and a11y.audio:
+			a11y.audio.play_loot_drop(ped.global_position, true)
+		A11yUIHelper.say("Officer dropped %d dollars and %s." % [cash_amt, Player.weapon_spoken_name(w_id)], false, 2, &"a11y_loot")
+	else:
+		if a11y and a11y.audio:
+			a11y.audio.play_loot_drop(ped.global_position, false)
+		A11yUIHelper.say("%s dropped %d dollars." % [ped.wealth_label(), cash_amt], false, 1, &"a11y_loot")
+
+
+func collect_pickup(kind: int, amount: int, weapon_id := Arsenal.Id.NONE) -> void:
 	if a11y and a11y.audio:
 		a11y.audio.play_weapon_cue(&"pickup")
 	if kind == WorldPickup.Kind.HEALTH:
@@ -1373,7 +1417,16 @@ func collect_pickup(kind: int, amount: int) -> void:
 		money += amount
 		packages_left = maxi(packages_left - 1, 0)
 		_flash_banner("PACKAGE  +$%d" % amount, 1.4)
-		save_current_game()
+	elif kind == WorldPickup.Kind.WEAPON and weapon_id != Arsenal.Id.NONE:
+		var wname := Player.weapon_spoken_name(weapon_id)
+		if player.owned_weapons.has(weapon_id):
+			player.add_ammo_for(weapon_id, amount)
+			_flash_banner("%s AMMO +%d" % [wname.to_upper(), amount], 1.4)
+		else:
+			player.give_weapon(weapon_id, amount)
+			if a11y:
+				a11y._prev_weapon = player.weapon
+			_flash_banner("PICKED UP %s" % wname.to_upper(), 1.5)
 
 
 func _sync_hud() -> void:
