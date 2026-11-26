@@ -9,6 +9,7 @@ const GRAVITY := 32.0
 
 @export var kind: Kind = Kind.COUPE
 
+var save_id := ""
 var occupied := false
 var ai_enabled := false
 var chase_target: Node3D
@@ -20,6 +21,7 @@ var has_driver := true
 var chase_slot := 0
 var display_name := "Car"
 var speed := 0.0
+var throttle_input := 0.0
 var max_speed := 22.0
 var ai_max_speed := 17.5
 var accel := 120.0
@@ -54,6 +56,7 @@ var _night := false
 var _horn_cd := 0.0
 var _screech_cd := 0.0
 var _last_headlights_on := false
+var _orig_mesh_mats: Dictionary = {}
 
 
 func setup(p_kind: Kind, spawn: Vector3, facing_y := 0.0) -> void:
@@ -150,7 +153,7 @@ func _build_near() -> void:
 
 
 func _build_mesh() -> void:
-	var spec := Models.car_for(kind)
+	var spec := Models.car_for(kind, save_id)
 	display_name = spec["name"]
 	var vis := Models.instance_car(spec["path"])
 	add_child(vis)
@@ -264,6 +267,7 @@ func _physics_process(delta: float) -> void:
 		throttle = 0.0
 		if exploded:
 			speed = 0.0
+	throttle_input = clampf(throttle, -1.0, 1.0) if (occupied or ai_enabled) and not wrecked and not exploded else 0.0
 	var handbrake := manual_handbrake or auto_brake
 	braking = throttle < -0.05 or handbrake
 	if throttle > 0.05 and not handbrake:
@@ -519,6 +523,9 @@ func _char_vehicle_visuals() -> void:
 	for node in find_children("*", "MeshInstance3D", true, false):
 		var mi := node as MeshInstance3D
 		if mi:
+			var iid := mi.get_instance_id()
+			if not _orig_mesh_mats.has(iid):
+				_orig_mesh_mats[iid] = mi.material_override
 			mi.material_override = Palette.mat(Color("1a1818"), 0.15, 0.92)
 	if _head_l:
 		_head_l.visible = false
@@ -539,12 +546,82 @@ func _notify_damage_stage(stage: int) -> void:
 
 
 func repair() -> void:
+	if not _orig_mesh_mats.is_empty():
+		for node in find_children("*", "MeshInstance3D", true, false):
+			var mi := node as MeshInstance3D
+			if mi and _orig_mesh_mats.has(mi.get_instance_id()):
+				mi.material_override = _orig_mesh_mats[mi.get_instance_id()]
 	hp = 100.0
 	wrecked = false
 	burning = false
 	burn_timer = 0.0
 	exploded = false
 	_damage_stage = 0
+	apply_time(_night)
+
+
+func to_save_dict() -> Dictionary:
+	return {
+		"id": save_id,
+		"kind": int(kind),
+		"pos": SaveManager.vec3_to_array(global_position),
+		"rot_y": rotation.y,
+		"hp": hp,
+		"stolen": stolen,
+		"wrecked": wrecked,
+		"burning": burning,
+		"burn_timer": burn_timer,
+		"exploded": exploded,
+		"ai_enabled": ai_enabled,
+		"has_driver": has_driver,
+		"fleeing": fleeing,
+		"patrol_i": patrol_i,
+		"node_i": node_i,
+		"next_i": next_i,
+		"prev_i": prev_i,
+		"chase_slot": chase_slot,
+	}
+
+
+func apply_save_dict(d: Dictionary) -> void:
+	repair()
+	var pos := SaveManager.array_to_vec3(d.get("pos"), global_position)
+	pos.y = maxf(pos.y, 0.15)
+	if is_inside_tree():
+		global_position = pos
+	else:
+		position = pos
+	rotation.y = SaveManager.safe_angle(d.get("rot_y"), rotation.y)
+	speed = 0.0
+	velocity = Vector3.ZERO
+	throttle_input = 0.0
+	a11y_drive_override = Vector2.ZERO
+	a11y_handbrake = false
+	occupied = false
+	chase_target = null
+	last_impact = 0.0
+	hp = SaveManager.safe_float(d.get("hp"), 100.0, 0.0, 100.0)
+	stolen = bool(d.get("stolen", false))
+	wrecked = bool(d.get("wrecked", false))
+	burning = bool(d.get("burning", false))
+	burn_timer = SaveManager.safe_float(d.get("burn_timer"), 0.0, 0.0, 10.0)
+	exploded = bool(d.get("exploded", false))
+	has_driver = bool(d.get("has_driver", kind != Kind.PARKED and kind != Kind.MILITARY))
+	var allow_ai := kind == Kind.COP or kind == Kind.CIVILIAN
+	ai_enabled = bool(d.get("ai_enabled", allow_ai)) and has_driver and not wrecked and not exploded and allow_ai
+	fleeing = bool(d.get("fleeing", false)) and ai_enabled
+	patrol_i = SaveManager.safe_int(d.get("patrol_i"), patrol_i, 0, 10000)
+	var max_node := maxi(graph.nodes.size() - 1, 0) if graph else 0
+	node_i = SaveManager.safe_int(d.get("node_i"), node_i, 0, max_node)
+	next_i = SaveManager.safe_int(d.get("next_i"), next_i, 0, max_node)
+	prev_i = SaveManager.safe_int(d.get("prev_i"), prev_i, -1, max_node)
+	chase_slot = SaveManager.safe_int(d.get("chase_slot"), chase_slot, 0, 128)
+	_damage_stage = 2 if hp <= 25.0 else (1 if hp <= 50.0 else 0)
+	if exploded:
+		ai_enabled = false
+		_char_vehicle_visuals()
+	if is_inside_tree():
+		force_update_transform()
 
 
 func _emit_vehicle_audio(kind_name: StringName, intensity := 1.0) -> void:

@@ -5,6 +5,7 @@ const GRAVITY := 18.0
 
 const Models = preload("res://scripts/models.gd")
 
+var save_id := ""
 var occupied := false
 var display_name := "AN-2"
 var speed := 0.0
@@ -162,3 +163,32 @@ func apply_damage(amount: float) -> void:
 	hp = clampf(hp - amount, 0.0, 140.0)
 	if hp <= 0.0:
 		wrecked = true
+
+
+func to_save_dict() -> Dictionary:
+	return {
+		"id": save_id,
+		"pos": SaveManager.vec3_to_array(global_position),
+		"rot_y": rotation.y,
+		"hp": hp,
+		"wrecked": wrecked,
+	}
+
+
+func apply_save_dict(d: Dictionary) -> void:
+	var pos := SaveManager.array_to_vec3(d.get("pos"), global_position)
+	pos.y = maxf(pos.y, 0.35)
+	if is_inside_tree():
+		global_position = pos
+	else:
+		position = pos
+	rotation.y = SaveManager.safe_angle(d.get("rot_y"), rotation.y)
+	rotation.x = 0.0
+	rotation.z = 0.0
+	speed = 0.0
+	velocity = Vector3.ZERO
+	occupied = false
+	hp = SaveManager.safe_float(d.get("hp"), 140.0, 0.0, 140.0)
+	wrecked = bool(d.get("wrecked", false))
+	if is_inside_tree():
+		force_update_transform()

@@ -111,6 +111,34 @@ static func _read_json_dict(path: String) -> Dictionary:
 	return dict
 
 
+static func safe_float(val: Variant, fallback: float, min_v: float, max_v: float) -> float:
+	if val is int or val is float:
+		var f := float(val)
+		if is_finite(f):
+			return clampf(f, min_v, max_v)
+	return fallback
+
+
+static func safe_int(val: Variant, fallback: int, min_v: int, max_v: int) -> int:
+	if val is int or val is float:
+		var f := float(val)
+		if is_finite(f):
+			return clampi(int(f), min_v, max_v)
+	return fallback
+
+
+static func safe_str(val: Variant, fallback := "") -> String:
+	return val if val is String else fallback
+
+
+static func safe_angle(val: Variant, fallback: float) -> float:
+	if val is int or val is float:
+		var f := float(val)
+		if is_finite(f):
+			return wrapf(f, -PI, PI)
+	return fallback
+
+
 static func vec3_to_array(v: Vector3) -> Array[float]:
 	return [v.x, v.y, v.z]
 

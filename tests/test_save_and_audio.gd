@@ -53,7 +53,7 @@ func run() -> void:
 	check(ow.district_name(ow.city.garage_pos) == "Warehouse District", "south warehouse resolves to Warehouse District")
 
 	# 4. Save & Load round-trip + .bak fallback
-	var test_save_path := "user://test_open_world_save.json"
+	var test_save_path := "user://test_open_world_save_%d.json" % OS.get_process_id()
 	var test_bak_path := test_save_path + ".bak"
 	if FileAccess.file_exists(test_save_path):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(test_save_path))
@@ -222,12 +222,194 @@ func run() -> void:
 	check(default_unchanged, "Gameplay milestones do not silently create or overwrite user save without explicit Save Game")
 	check(loot_before >= 0, "Pickup tracking valid")
 
+	# 6. Smooth gradual engine audio pitch ramp (no abrupt auto-tune jumps)
+	ow._enter_vehicle(ow.coupe)
+	ow.coupe.speed = 0.0
+	ow.coupe.throttle_input = 0.0
+	ow.sfx.tick(0.016, ow.player, ow.coupe, 0)
+	var p0: float = ow.sfx._engine.pitch_scale
+	ow.coupe.speed = ow.coupe.max_speed
+	ow.coupe.throttle_input = 1.0
+	ow.sfx.tick(0.016, ow.player, ow.coupe, 0)
+	var p1: float = ow.sfx._engine.pitch_scale
+	check(p1 >= p0 and (p1 - p0) <= 0.03, "Engine pitch does not jump abruptly in a single frame on rapid acceleration")
+	for _f in 25:
+		ow.sfx.tick(0.016, ow.player, ow.coupe, 0)
+	var p_mid: float = ow.sfx._engine.pitch_scale
+	var top_target: float = CityAudio.engine_pitch(ow.coupe.max_speed, ow.coupe.max_speed)
+	check(p_mid > p1 + 0.05 and p_mid < top_target - 0.05, "Engine pitch climbs gradually through mid-range instead of snapping to top pitch")
+	for _f in 180:
+		ow.sfx.tick(0.016, ow.player, ow.coupe, 0)
+	var p_top: float = ow.sfx._engine.pitch_scale
+	check(p_top > p_mid + 0.05 and absf(p_top - top_target) < 0.05, "Engine pitch reaches top cruise pitch after smooth ramp")
+	ow.coupe.speed = 10.0
+	ow.coupe.throttle_input = 0.0
+	ow.sfx.tick(0.016, ow.player, ow.coupe, 0)
+	var p_drop: float = ow.sfx._engine.pitch_scale
+	check((p_top - p_drop) <= 0.03, "Engine pitch winds down smoothly without abrupt drop on collision/braking")
+	# Braking while moving forward must not cause an RPM/volume surge
+	ow.coupe.speed = 60.0
+	ow.coupe.throttle_input = -1.0
+	ow.sfx.tick(0.016, ow.player, ow.coupe, 0)
+	var p_brake1: float = ow.sfx._engine.pitch_scale
+	ow.sfx.tick(0.016, ow.player, ow.coupe, 0)
+	var p_brake2: float = ow.sfx._engine.pitch_scale
+	check(p_brake2 <= p_brake1 + 0.001, "Braking while rolling forward winds engine pitch down instead of surging up")
+	ow.set_paused(true, true)
+	check(not ow.sfx._engine.playing, "Pausing stops player vehicle engine loop cleanly")
+	ow.set_paused(false, true)
+	ow.coupe.speed = 0.0
+	ow._exit_vehicle()
+
+	# 7. Full world vehicle & aircraft persistence + stolen car stays parked on exit
+	var test_parked: Vehicle = null
+	var test_civ: Vehicle = null
+	for node in get_nodes_in_group("vehicles"):
+		var v := node as Vehicle
+		if v == null:
+			continue
+		if test_parked == null and v.kind == Vehicle.Kind.PARKED:
+			test_parked = v
+		elif test_civ == null and v.kind == Vehicle.Kind.CIVILIAN:
+			test_civ = v
+	check(test_parked != null and test_civ != null, "World spawns parked and civilian vehicles")
+	if test_civ != null and test_parked != null:
+		var civ_id := test_civ.save_id
+		var civ_name := test_civ.display_name
+		var parked_id := test_parked.save_id
+		var parked_name := test_parked.display_name
+		ow._enter_vehicle(test_civ)
+		var civ_dest := Vector3(-75.0, 0.35, 114.0)
+		test_civ.global_position = civ_dest
+		test_civ.rotation.y = 1.25
+		test_civ.hp = 82.0
+		test_civ.speed = 0.0
+		ow._exit_vehicle()
+		check(not test_civ.ai_enabled and not test_civ.has_driver, "Exiting a stolen civilian car leaves it parked without ghost AI")
+
+		var parked_dest := Vector3(-70.0, 0.35, 114.0)
+		test_parked.global_position = parked_dest
+		test_parked.rotation.y = -0.6
+		test_parked.hp = 64.0
+		test_parked.speed = 0.0
+
+		var airs := get_nodes_in_group("aircraft")
+		var test_air: Aircraft = airs[0] as Aircraft if airs.size() > 0 else null
+		var air_id := test_air.save_id if test_air != null else ""
+		var air_dest := Vector3(-60.0, 0.55, 120.0)
+		if test_air != null:
+			test_air.global_position = air_dest
+			test_air.hp = 115.0
+			test_air.speed = 0.0
+
+		var expected_player_pos: Vector3 = ow.player.global_position
+		var save_veh_ok: bool = ow.save_current_game(test_save_path)
+		check(save_veh_ok, "Saves world vehicles and aircraft cleanly")
+
+		# Free ow before instantiating fresh scene so duplicate 3D colliders don't overlap in PhysicsServer3D
+		ow.queue_free()
+		await process_frame
+
+		var ow3 = load("res://scenes/main.tscn").instantiate()
+		root.add_child(ow3)
+		current_scene = ow3
+		await process_frame
+		var load_veh_ok: bool = ow3.load_saved_game(test_save_path)
+		await frames(2)
+		check(load_veh_ok, "Fresh scene loads saved world vehicles from TITLE")
+
+		var restored_civ: Vehicle = null
+		var restored_parked: Vehicle = null
+		for node in ow3.get_tree().get_nodes_in_group("vehicles"):
+			var v := node as Vehicle
+			if v and ow3.is_ancestor_of(v) and v.save_id == civ_id:
+				restored_civ = v
+			elif v and ow3.is_ancestor_of(v) and v.save_id == parked_id:
+				restored_parked = v
+		check(restored_civ != null and restored_civ.global_position.distance_to(civ_dest) < 0.35 and is_equal_approx(restored_civ.hp, 82.0) and not restored_civ.ai_enabled and restored_civ.display_name == civ_name and ow3.player.global_position.distance_to(expected_player_pos) < 0.35, "Fresh scene restores stolen civilian car right beside player and parked with same model")
+		check(restored_parked != null and restored_parked.global_position.distance_to(parked_dest) < 0.35 and is_equal_approx(restored_parked.hp, 64.0) and restored_parked.display_name == parked_name, "Fresh scene restores parked car position, HP, and model")
+		var restored_air: Aircraft = null
+		if air_id != "":
+			for node in ow3.get_tree().get_nodes_in_group("aircraft"):
+				var a := node as Aircraft
+				if a and ow3.is_ancestor_of(a) and a.save_id == air_id:
+					restored_air = a
+			check(restored_air != null and restored_air.global_position.distance_to(air_dest) < 0.5 and is_equal_approx(restored_air.hp, 115.0), "Fresh scene restores aircraft position and HP")
+
+		# Exploded vehicle un-chars cleanly when loading an intact save, and dynamic cops cleanup on legacy v1 load
+		restored_parked.apply_damage(100.0)
+		restored_parked._explode()
+		check(restored_parked.exploded, "Exploding parked vehicle marks it exploded")
+		ow3._make_cop(Vector3(12.0, 0.2, 12.0), 99)
+		var intact_reload_ok: bool = ow3.load_saved_game(test_save_path)
+		await frames(1)
+		check(intact_reload_ok and not restored_parked.exploded and is_equal_approx(restored_parked.hp, 64.0), "Loading intact save un-chars exploded vehicle and cleans extra dynamic cops")
+
+		# Legacy v1 save compatibility (coupe + in_coupe without vehicles/aircraft keys)
+		var v1_ok: bool = ow3.apply_saved_state({
+			"version": 1,
+			"phase": ow3.Phase.DELIVER,
+			"money": 900,
+			"stolen": true,
+			"delivered": false,
+			"packages_left": 1,
+			"player": {"pos": [10.0, 0.2, 10.0], "in_coupe": true, "weapon": 0, "owned_weapons": [], "ammo": {}, "magazines": {}},
+			"coupe": {"pos": [14.0, 0.35, -18.0], "rot_y": 0.5, "hp": 88.0, "stolen": true},
+		})
+		check(v1_ok and ow3.active_vehicle == ow3.coupe and is_equal_approx(ow3.coupe.hp, 88.0), "Legacy v1 save format remains compatible")
+
+		# Saving while seated inside a non-coupe vehicle restores occupancy on load
+		ow3.apply_saved_state(SaveManager.load_data(test_save_path))
+		ow3._enter_vehicle(restored_parked)
+		var seated_save_ok: bool = ow3.save_current_game(test_save_path)
+		check(seated_save_ok, "Saves while seated inside non-coupe vehicle")
+		ow3.queue_free()
+		await process_frame
+
+		var ow4 = load("res://scenes/main.tscn").instantiate()
+		root.add_child(ow4)
+		current_scene = ow4
+		await process_frame
+		var load_seated_ok: bool = ow4.load_saved_game(test_save_path)
+		await frames(2)
+		check(load_seated_ok and ow4.player.in_vehicle and ow4.active_vehicle != null and ow4.active_vehicle.save_id == parked_id, "Fresh scene restores active non-coupe vehicle occupancy")
+
+		# Saving while seated inside an Aircraft restores active_aircraft occupancy
+		if air_id != "":
+			ow4._exit_vehicle()
+			var ow4_air: Aircraft = null
+			for node in ow4.get_tree().get_nodes_in_group("aircraft"):
+				var a := node as Aircraft
+				if a and ow4.is_ancestor_of(a) and a.save_id == air_id:
+					ow4_air = a
+			if ow4_air != null:
+				ow4._enter_aircraft(ow4_air)
+				ow4.save_current_game(test_save_path)
+				ow4.queue_free()
+				await process_frame
+				var ow5 = load("res://scenes/main.tscn").instantiate()
+				root.add_child(ow5)
+				current_scene = ow5
+				await process_frame
+				var load_air_ok: bool = ow5.load_saved_game(test_save_path)
+				await frames(2)
+				check(load_air_ok and ow5.player.in_vehicle and ow5.active_aircraft != null and ow5.active_aircraft.save_id == air_id, "Fresh scene restores active aircraft occupancy")
+				ow5.queue_free()
+				await process_frame
+			else:
+				ow4.queue_free()
+				await process_frame
+		else:
+			ow4.queue_free()
+			await process_frame
+	else:
+		ow.queue_free()
+		await process_frame
+
 	if FileAccess.file_exists(test_save_path):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(test_save_path))
 	if FileAccess.file_exists(test_bak_path):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(test_bak_path))
 
-	ow.queue_free()
-	await process_frame
 	print("SAVE_AND_AUDIO_SUITE: %d checks, %d failures" % [checks, failures])
 	quit(1 if failures else 0)

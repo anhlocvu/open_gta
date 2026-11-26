@@ -257,3 +257,34 @@ Upgraded Auto-Drive (`P`) to cruise at `vehicle.max_speed` when the forward corr
 - `godot_console --headless --path . --quit-after 5`: exit `0`.
 - Re-exported `export/windows/OperationChaos.exe` and verified `OperationChaos.exe --headless --quit-after 5` exits cleanly (`exit code 0`).
 - Note: Interactive gameplay with live driving feel, NVDA speech, and audio hardware remains to be manually verified by the user.
+
+
+## Session: 2026-11-26 — Full World Vehicle Save/Load Persistence & Smooth Engine Audio
+
+### Summary
+Fixed driven/stolen vehicles vanishing across Save/Load (`CONTINUE GAME` / `LOAD SAVED GAME`) and driverless stolen cars driving away on exit, and replaced the abrupt "auto-tune" engine pitch response with a warm 4-stroke combustion loop and inertial slew-rate-limited RPM/pitch smoothing, governed by SpecKit (`specs/007-vehicle-save-and-smooth-engine-audio/`) and ECC (`tdd-guide` + `gdscript-reviewer`).
+
+### Key Changes
+- **Full World Vehicle & Aircraft Persistence (`scripts/vehicle.gd`, `scripts/aircraft.gd`, `scripts/models.gd`, `scripts/save_manager.gd`, `scripts/game.gd`)**:
+  - Assigned deterministic `save_id`s to every spawned `Vehicle` (`coupe`, `parked:<i>`, `civ:<i>`, `cop:<i>`, `mil:<i>`, `cop_dyn:<i>`) and `Aircraft` (`air:<i>`), and made `GameModels.car_for()` deterministic from `save_id` so parked/civilian cars keep their exact model and `display_name` across relaunches.
+  - Added `SaveManager.safe_float()`, `safe_int()`, `safe_str()`, and `safe_angle()`, plus `Vehicle.to_save_dict()`/`apply_save_dict()` (with `_orig_mesh_mats` material restore in `repair()`, `wrapf` angle wrapping, and `ai_enabled` gating) and `Aircraft.to_save_dict()`/`apply_save_dict()`.
+  - Extended `Game.serialize_state()` and `apply_saved_state()` to persist and restore all `"vehicles"`, `"aircraft"`, `"active_vehicle_id"`, and `"active_aircraft_id"` (including dynamic `cop_dyn:*` recreation/cleanup and burning-vehicle seating) while preserving full backward compatibility with legacy v1 `"coupe"` saves.
+  - Fixed `Game._exit_vehicle()`, `_update_cops()`, and `_update_civilians()` so driverless stolen vehicles (`has_driver == false`) stay parked where left instead of re-enabling AI and driving away.
+- **Natural Smooth Engine Audio (`scripts/city_audio.gd`, `scripts/accessibility/a11y_spatial_audio.gd`, `scripts/vehicle.gd`, `scripts/game.gd`)**:
+  - Upgraded `CityAudio.make_engine()` to a seamless 6,300-sample (`12 x 525`, `42 Hz` fundamental) 4-stroke combustion loop with `0.5x`/`1.5x`/`2.5x` sub-harmonic firing cadence, low-level mechanical texture, and soft `tanh` saturation.
+  - Added `Vehicle.throttle_input` tracking and inertial slew-rate-limited RPM/pitch smoothing in `CityAudio._tick_engine(delta, vehicle)` over a natural `0.74..1.48` monotonic pitch curve (stopping cleanly on `Game.set_paused(true)` and preventing RPM surges while braking forward).
+  - Smoothed 3D traffic slot and aircraft engine `pitch_scale` per frame in `A11ySpatialAudio` instead of stepping every `0.08s`.
+
+### Verified Checks (Post-Final-Edit, Headless)
+- `tests/test_accessibility.gd`: 74 checks, 0 failures
+- `tests/test_accessibility_speech.gd`: 20 checks, 0 failures
+- `tests/test_combat.gd`: 44 checks, 0 failures
+- `tests/test_cover.gd`: 10 checks, 0 failures
+- `tests/test_game_integration.gd`: 18 checks, 0 failures
+- `tests/test_harbor_feel.gd`: 13 checks, 0 failures
+- `tests/test_save_and_audio.gd`: 60 checks, 0 failures
+- `tests/test_stage_one.gd`: 24 checks, 0 failures
+- Total headless verified: **263 checks, 0 failures**.
+- `godot_console --headless --path . --quit-after 5`: exit `0`.
+- Re-exported `export/windows/OperationChaos.exe` (`109,149,184` bytes) and `export/windows/OperationChaos.pck` (`114,874,684` bytes); verified `OperationChaos.exe --headless --quit-after 5` exits cleanly (`exit code 0`).
+- Note: Interactive listening QA of the updated engine audio and live Windows gameplay remains to be manually confirmed by the user.

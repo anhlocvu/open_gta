@@ -19,6 +19,7 @@ var _pool_ped_3d: Array[AudioStreamPlayer3D] = []
 var _cursor_ped := 0
 var _pool_traffic_3d: Array[AudioStreamPlayer3D] = []
 var _traffic_slot_ids: Array[int] = []
+var _traffic_target_pitches: Array[float] = []
 var _pool_siren_3d: Array[AudioStreamPlayer3D] = []
 var _siren_slot_ids: Array[int] = []
 var _aircraft_player: AudioStreamPlayer
@@ -89,6 +90,7 @@ func _ready() -> void:
 		t.stream = _wav_traffic_engine
 		_pool_traffic_3d.append(t)
 		_traffic_slot_ids.append(0)
+		_traffic_target_pitches.append(0.74)
 	for i in POOL_SIREN_SIZE:
 		var s := _make_3d_player("Vehicles", 10.0, 140.0, true)
 		s.stream = _wav_siren
@@ -345,7 +347,7 @@ func tick_world_audio(game: Node, origin: Vector3, delta: float) -> void:
 	for p in _ambience_players:
 		if not p.playing:
 			p.play()
-	_tick_aircraft_audio(game)
+	_tick_aircraft_audio(game, delta)
 	_traffic_scan_timer -= delta
 	if _traffic_scan_timer <= 0.0:
 		_traffic_scan_timer = 0.08
@@ -354,7 +356,17 @@ func tick_world_audio(game: Node, origin: Vector3, delta: float) -> void:
 	else:
 		_update_active_slot_positions(_pool_traffic_3d, _traffic_slot_ids)
 		_update_active_slot_positions(_pool_siren_3d, _siren_slot_ids)
+	_smooth_traffic_pitches(delta)
 	_tick_ped_audio(tree, origin, delta)
+
+
+func _smooth_traffic_pitches(delta: float) -> void:
+	var dt := maxf(delta, 0.0)
+	for i in _pool_traffic_3d.size():
+		if _traffic_slot_ids[i] == 0:
+			continue
+		var p := _pool_traffic_3d[i]
+		p.pitch_scale = move_toward(p.pitch_scale, _traffic_target_pitches[i], 0.45 * dt)
 
 
 func _update_active_slot_positions(pool: Array[AudioStreamPlayer3D], slot_ids: Array[int]) -> void:
@@ -402,18 +414,21 @@ func _ensure_ambience(game: Node) -> void:
 	_ambience_players.append(bar)
 
 
-func _tick_aircraft_audio(game: Node) -> void:
-	var jet = game.get("active_aircraft")
-	if jet == null:
+func _tick_aircraft_audio(game: Node, delta: float = 0.016) -> void:
+	var jet := game.get("active_aircraft") as Aircraft
+	if not is_instance_valid(jet):
 		if _aircraft_player.playing:
 			_aircraft_player.stop()
+		_aircraft_player.pitch_scale = 0.74
 		return
-	var spd := absf(float(jet.get("speed")))
-	var cap := maxf(float(jet.get("max_speed")), 1.0)
+	var spd := absf(jet.speed)
+	var cap := maxf(jet.max_speed, 1.0)
 	var amt := clampf(spd / cap, 0.0, 1.0)
-	_aircraft_player.pitch_scale = lerpf(0.75, 1.65, amt)
+	var target_pitch := lerpf(0.74, 1.45, pow(amt, 0.85))
+	_aircraft_player.pitch_scale = move_toward(_aircraft_player.pitch_scale, target_pitch, 0.48 * maxf(delta, 0.0))
 	_aircraft_player.volume_db = lerpf(-15.0, -5.0, amt)
 	if not _aircraft_player.playing:
+		_aircraft_player.pitch_scale = target_pitch
 		_aircraft_player.play()
 
 
@@ -439,7 +454,7 @@ func _assign_persistent_slots(pool: Array[AudioStreamPlayer3D], slot_ids: Array[
 			p.global_position = v.global_position + Vector3(0.0, 1.0, 0.0)
 			if reassigned:
 				p.reset_physics_interpolation()
-			on_update.call(p, v, idx)
+			on_update.call(p, v, idx, reassigned)
 			if not p.playing:
 				p.play()
 
@@ -457,8 +472,11 @@ func _tick_traffic_audio(tree: SceneTree, origin: Vector3) -> void:
 	var chosen: Array[Vehicle] = []
 	for i in mini(movers.size(), _pool_traffic_3d.size()):
 		chosen.append(movers[i].v)
-	_assign_persistent_slots(_pool_traffic_3d, _traffic_slot_ids, chosen, func(p: AudioStreamPlayer3D, v: Vehicle, _idx: int) -> void:
-		p.pitch_scale = CityAudio.engine_pitch(v.speed, v.max_speed) * 0.92
+	_assign_persistent_slots(_pool_traffic_3d, _traffic_slot_ids, chosen, func(p: AudioStreamPlayer3D, v: Vehicle, idx: int, reassigned: bool) -> void:
+		var target := CityAudio.engine_pitch(v.speed, v.max_speed) * 0.92
+		_traffic_target_pitches[idx] = target
+		if reassigned:
+			p.pitch_scale = target
 		p.volume_db = -14.0
 	)
 
@@ -482,7 +500,7 @@ func _tick_siren_audio(game: Node, tree: SceneTree, origin: Vector3) -> void:
 	var chosen: Array[Vehicle] = []
 	for i in mini(cop_list.size(), _pool_siren_3d.size()):
 		chosen.append(cop_list[i].v)
-	_assign_persistent_slots(_pool_siren_3d, _siren_slot_ids, chosen, func(p: AudioStreamPlayer3D, _v: Vehicle, idx: int) -> void:
+	_assign_persistent_slots(_pool_siren_3d, _siren_slot_ids, chosen, func(p: AudioStreamPlayer3D, _v: Vehicle, idx: int, _reassigned: bool) -> void:
 		p.volume_db = -7.0
 		p.pitch_scale = 1.0 + float(idx) * 0.03
 	)

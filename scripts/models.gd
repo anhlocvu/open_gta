@@ -48,19 +48,28 @@ const PARKED_CARS := [
 ]
 
 
-static func car_for(kind: int) -> Dictionary:
+static func _pick_row(rows: Array, seed_key: String) -> Array:
+	if seed_key == "":
+		return rows[randi() % rows.size()]
+	var h := 2166136261
+	for b in seed_key.to_utf8_buffer():
+		h = ((h ^ int(b)) * 16777619) & 0x7FFFFFFF
+	return rows[h % rows.size()]
+
+
+static func car_for(kind: int, seed_key := "") -> Dictionary:
 	match kind:
 		0:
 			return {"path": "res://assets/cars/real/SportsCar.fbx", "name": "AMBER COUPE"}
 		1:
 			return {"path": "res://assets/cars/real/Cop.fbx", "name": "UNIT"}
 		2:
-			var row: Array = PARKED_CARS[randi() % PARKED_CARS.size()]
+			var row: Array = _pick_row(PARKED_CARS, seed_key)
 			return {"path": row[0], "name": row[1]}
 		4:
 			return {"path": "res://assets/cars/real/SUV.fbx", "name": "PATROL JEEP"}
 		_:
-			var row2: Array = CIV_CARS[randi() % CIV_CARS.size()]
+			var row2: Array = _pick_row(CIV_CARS, seed_key)
 			return {"path": row2[0], "name": row2[1]}
 
 

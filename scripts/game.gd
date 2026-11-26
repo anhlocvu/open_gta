@@ -37,6 +37,7 @@ var a11y: A11yGameplayController
 var master_volume := 1.0
 var paused := false
 var _banner_seq := 0
+var _next_cop_dyn_id := 0
 var _settings := ConfigFile.new()
 
 
@@ -143,13 +144,16 @@ func _ready() -> void:
 
 	coupe = Vehicle.new()
 	coupe.kind = Vehicle.Kind.COUPE
+	coupe.save_id = "coupe"
 	add_child(coupe)
 	coupe.setup(Vehicle.Kind.COUPE, city.coupe_spawn, city.coupe_facing)
 	coupe.bind_graph(roads)
 
-	for parked in city.parked_spawns:
+	for i in city.parked_spawns.size():
+		var parked: Dictionary = city.parked_spawns[i]
 		var v := Vehicle.new()
 		v.kind = Vehicle.Kind.PARKED
+		v.save_id = "parked:%d" % i
 		add_child(v)
 		v.setup(Vehicle.Kind.PARKED, parked["pos"], parked["yaw"])
 		v.bind_graph(roads)
@@ -160,6 +164,7 @@ func _ready() -> void:
 	for i in city.traffic_spawns.size():
 		var t := Vehicle.new()
 		t.kind = Vehicle.Kind.CIVILIAN
+		t.save_id = "civ:%d" % i
 		add_child(t)
 		var spec: Dictionary = city.traffic_spawns[i]
 		t.setup(Vehicle.Kind.CIVILIAN, spec["pos"], spec["yaw"])
@@ -222,6 +227,8 @@ func set_paused(on: bool, silent := false) -> void:
 		player.locked = on or (phase in [Phase.BUSTED, Phase.WASTED])
 		if on and a11y:
 			a11y.nav.stop_autowalk(player)
+	if on and sfx:
+		sfx.tick(0.0, null, null, 0)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if (on or phase in [Phase.TITLE, Phase.BUSTED, Phase.WASTED] or DisplayServer.is_touchscreen_available()) else Input.MOUSE_MODE_CAPTURED
 	hud.show_pause(on, silent)
 
@@ -231,21 +238,6 @@ func toggle_pause() -> void:
 func set_master_volume(value: float) -> void:
 	master_volume = clampf(value, 0.0, 1.0)
 	AudioServer.set_bus_volume_db(AudioServer.get_bus_index("Master"), linear_to_db(maxf(master_volume, 0.0001)))
-
-static func _safe_float(val: Variant, fallback: float, min_v: float, max_v: float) -> float:
-	if val is int or val is float:
-		var f := float(val)
-		if is_finite(f):
-			return clampf(f, min_v, max_v)
-	return fallback
-
-
-static func _safe_int(val: Variant, fallback: int, min_v: int, max_v: int) -> int:
-	if val is int or val is float:
-		var f := float(val)
-		if is_finite(f):
-			return clampi(int(f), min_v, max_v)
-	return fallback
 
 
 static func _serialize_event(ev: InputEvent) -> Dictionary:
@@ -270,7 +262,7 @@ static func _deserialize_event(raw: Variant) -> InputEvent:
 		var d := raw as Dictionary
 		var kind := str(d.get("kind", ""))
 		if kind == "key":
-			var code := _safe_int(d.get("code"), 0, 1, 0x7FFFFFFF)
+			var code := SaveManager.safe_int(d.get("code"), 0, 1, 0x7FFFFFFF)
 			if code == 0 or code in [KEY_INSERT, KEY_CAPSLOCK]:
 				return null
 			var kev := InputEventKey.new()
@@ -282,7 +274,7 @@ static func _deserialize_event(raw: Variant) -> InputEvent:
 			kev.meta_pressed = bool(d.get("meta", false))
 			return kev
 		if kind == "mouse":
-			var btn := _safe_int(d.get("button"), 0, 1, 9)
+			var btn := SaveManager.safe_int(d.get("button"), 0, 1, 9)
 			if btn <= 0:
 				return null
 			var mev := InputEventMouseButton.new()
@@ -304,13 +296,13 @@ func _load_settings() -> void:
 		speech.load_settings(SETTINGS_PATH)
 	if _settings.load(SETTINGS_PATH) != OK:
 		return
-	clock.set_quality(_safe_int(_settings.get_value("settings", "quality", 0), 0, 0, GraphicsProfile.Quality.HIGH))
-	camera.mouse_sens = _safe_float(_settings.get_value("settings", "mouse_sens", 0.0032), 0.0032, 0.0005, 0.02)
-	camera.ads_sensitivity = _safe_float(_settings.get_value("settings", "ads_sens", 0.55), 0.55, 0.1, 1.5)
-	set_master_volume(_safe_float(_settings.get_value("settings", "master_volume", 1.0), 1.0, 0.0, 1.0))
+	clock.set_quality(SaveManager.safe_int(_settings.get_value("settings", "quality", 0), 0, 0, GraphicsProfile.Quality.HIGH))
+	camera.mouse_sens = SaveManager.safe_float(_settings.get_value("settings", "mouse_sens", 0.0032), 0.0032, 0.0005, 0.02)
+	camera.ads_sensitivity = SaveManager.safe_float(_settings.get_value("settings", "ads_sens", 0.55), 0.55, 0.1, 1.5)
+	set_master_volume(SaveManager.safe_float(_settings.get_value("settings", "master_volume", 1.0), 1.0, 0.0, 1.0))
 	var fp_val: Variant = _settings.get_value("settings", "first_person", false)
 	camera.set_first_person(fp_val if fp_val is bool else false)
-	camera.first_person_fov = _safe_float(_settings.get_value("settings", "fov", 86.0), 86.0, 70.0, 110.0)
+	camera.first_person_fov = SaveManager.safe_float(_settings.get_value("settings", "fov", 86.0), 86.0, 70.0, 110.0)
 	if not _settings.has_section("bindings"):
 		return
 	for action in _settings.get_section_keys("bindings"):
@@ -349,9 +341,20 @@ func save_settings() -> void:
 	_settings.save(SETTINGS_PATH)
 
 
-func _make_cop(pos: Vector3, idx: int) -> Vehicle:
+func _make_cop(pos: Vector3, idx: int, custom_save_id := "") -> Vehicle:
 	var cop := Vehicle.new()
 	cop.kind = Vehicle.Kind.COP
+	if custom_save_id != "":
+		cop.save_id = custom_save_id
+		if custom_save_id.begins_with("cop_dyn:"):
+			var suffix := custom_save_id.substr(8)
+			if suffix.is_valid_int():
+				_next_cop_dyn_id = maxi(_next_cop_dyn_id, suffix.to_int() + 1)
+	elif idx < city.cop_spawns.size():
+		cop.save_id = "cop:%d" % idx
+	else:
+		cop.save_id = "cop_dyn:%d" % _next_cop_dyn_id
+		_next_cop_dyn_id += 1
 	add_child(cop)
 	cop.setup(Vehicle.Kind.COP, pos, PI)
 	cop.patrol = city.patrol
@@ -376,14 +379,18 @@ func _spawn_peds() -> void:
 
 
 func _spawn_base_units() -> void:
-	for spec in city.military_spawns:
+	for i in city.military_spawns.size():
+		var spec: Dictionary = city.military_spawns[i]
 		var v := Vehicle.new()
 		v.kind = Vehicle.Kind.MILITARY
+		v.save_id = "mil:%d" % i
 		add_child(v)
 		v.setup(Vehicle.Kind.MILITARY, spec["pos"], spec["yaw"])
 		v.bind_graph(roads)
-	for spec in city.aircraft_spawns:
+	for i in city.aircraft_spawns.size():
+		var spec: Dictionary = city.aircraft_spawns[i]
 		var jet := Aircraft.new()
+		jet.save_id = "air:%d" % i
 		add_child(jet)
 		jet.setup(spec["pos"], spec["yaw"])
 	var patrol_base: Array[Vector3] = [
@@ -451,6 +458,64 @@ func district_name(pos: Vector3) -> String:
 	return "North Harbor"
 
 
+func _collect_vehicles_by_id() -> Dictionary[String, Vehicle]:
+	var out: Dictionary[String, Vehicle] = {}
+	if not is_inside_tree():
+		return out
+	for node in get_tree().get_nodes_in_group("vehicles"):
+		var v := node as Vehicle
+		if v and is_instance_valid(v) and is_ancestor_of(v) and v.save_id != "":
+			out[v.save_id] = v
+	return out
+
+
+func _collect_aircraft_by_id() -> Dictionary[String, Aircraft]:
+	var out: Dictionary[String, Aircraft] = {}
+	if not is_inside_tree():
+		return out
+	for node in get_tree().get_nodes_in_group("aircraft"):
+		var jet := node as Aircraft
+		if jet and is_instance_valid(jet) and is_ancestor_of(jet) and jet.save_id != "":
+			out[jet.save_id] = jet
+	return out
+
+
+func _cleanup_dynamic_cops(keep_ids: Dictionary[String, bool]) -> void:
+	for cop in cops.duplicate():
+		if not is_instance_valid(cop):
+			cops.erase(cop)
+			continue
+		if cop.save_id.begins_with("cop_dyn:") and not keep_ids.has(cop.save_id):
+			cops.erase(cop)
+			cop.remove_from_group("vehicles")
+			cop.remove_from_group("cops")
+			cop.queue_free()
+
+
+func _seat_in_vehicle(v: Vehicle) -> void:
+	active_vehicle = v
+	v.a11y_drive_override = Vector2.ZERO
+	v.a11y_handbrake = false
+	v.occupied = true
+	v.ai_enabled = false
+	v.fleeing = false
+	player.in_vehicle = true
+	player.set_hidden(true)
+	camera.follow = v
+	camera.set_vehicle_mode(true)
+	touch.set_driving(true)
+
+
+func _seat_in_aircraft(jet: Aircraft) -> void:
+	active_aircraft = jet
+	jet.occupied = true
+	player.in_vehicle = true
+	player.set_hidden(true)
+	camera.follow = jet
+	camera.set_aircraft_mode(true)
+	touch.set_driving(true)
+
+
 func serialize_state() -> Dictionary:
 	var alive_pickups := {}
 	if is_inside_tree():
@@ -483,6 +548,14 @@ func serialize_state() -> Dictionary:
 	if save_phase in [Phase.TITLE, Phase.BUSTED, Phase.WASTED]:
 		save_phase = Phase.FREE if _delivered else (Phase.DELIVER if _stolen else Phase.STEAL)
 	var tracked_pos := _tracked().global_position
+	var vehicles_arr: Array[Dictionary] = []
+	var aircraft_arr: Array[Dictionary] = []
+	for v in _collect_vehicles_by_id().values():
+		vehicles_arr.append(v.to_save_dict())
+	for jet in _collect_aircraft_by_id().values():
+		aircraft_arr.append(jet.to_save_dict())
+	var active_veh_id := active_vehicle.save_id if (active_vehicle != null and is_instance_valid(active_vehicle)) else ""
+	var active_air_id := active_aircraft.save_id if (active_aircraft != null and is_instance_valid(active_aircraft)) else ""
 	return {
 		"phase": save_phase,
 		"money": money,
@@ -491,6 +564,8 @@ func serialize_state() -> Dictionary:
 		"delivered": _delivered,
 		"taken_pickups": taken_pickups,
 		"crate_taken": crates_arr,
+		"active_vehicle_id": active_veh_id,
+		"active_aircraft_id": active_air_id,
 		"wanted": {
 			"stars": heat.stars if heat else 0,
 			"heat": heat.heat if heat else 0.0,
@@ -516,14 +591,9 @@ func serialize_state() -> Dictionary:
 			"first_person": camera.first_person,
 			"shoulder": camera.shoulder,
 		},
-		"coupe": {
-			"pos": SaveManager.vec3_to_array(coupe.global_position),
-			"rot_y": coupe.rotation.y,
-			"hp": coupe.hp,
-			"stolen": coupe.stolen,
-			"wrecked": coupe.wrecked,
-			"exploded": coupe.exploded,
-		} if coupe else {},
+		"coupe": coupe.to_save_dict() if coupe else {},
+		"vehicles": vehicles_arr,
+		"aircraft": aircraft_arr,
 	}
 
 
@@ -532,12 +602,16 @@ func apply_saved_state(data: Dictionary) -> bool:
 		return false
 	if active_aircraft:
 		active_aircraft.occupied = false
+		active_aircraft.speed = 0.0
+		active_aircraft.velocity = Vector3.ZERO
 		active_aircraft = null
 	if active_vehicle:
 		var old_v := active_vehicle
 		old_v.occupied = false
-		if old_v.kind in [Vehicle.Kind.COP, Vehicle.Kind.CIVILIAN]:
-			old_v.ai_enabled = true
+		old_v.a11y_drive_override = Vector2.ZERO
+		old_v.a11y_handbrake = false
+		old_v.throttle_input = 0.0
+		old_v.ai_enabled = old_v.has_driver and not old_v.wrecked and not old_v.exploded and (old_v.kind in [Vehicle.Kind.COP, Vehicle.Kind.CIVILIAN])
 		active_vehicle = null
 	player.in_vehicle = false
 	player.set_hidden(false)
@@ -546,11 +620,11 @@ func apply_saved_state(data: Dictionary) -> bool:
 	camera.set_aircraft_mode(false)
 	touch.set_driving(false)
 
-	money = _safe_int(data.get("money"), 420, 0, 999999999)
+	money = SaveManager.safe_int(data.get("money"), 420, 0, 999999999)
 	_stolen = bool(data.get("stolen", false))
 	_delivered = bool(data.get("delivered", false))
-	packages_left = _safe_int(data.get("packages_left"), city.package_spawns.size(), 0, city.package_spawns.size())
-	phase = _safe_int(data.get("phase"), Phase.STEAL, Phase.STEAL, Phase.FREE) as Phase
+	packages_left = SaveManager.safe_int(data.get("packages_left"), city.package_spawns.size(), 0, city.package_spawns.size())
+	phase = SaveManager.safe_int(data.get("phase"), Phase.STEAL, Phase.STEAL, Phase.FREE) as Phase
 
 	_crate_taken.clear()
 	var crates_raw: Variant = data.get("crate_taken", [])
@@ -591,18 +665,18 @@ func apply_saved_state(data: Dictionary) -> bool:
 	saved_pos.y = maxf(saved_pos.y, 0.05)
 	player.velocity = Vector3.ZERO
 	player.global_position = saved_pos
-	player.rotation.y = _safe_float(pdata.get("rot_y"), 0.0, -TAU * 4.0, TAU * 4.0)
+	player.rotation.y = SaveManager.safe_float(pdata.get("rot_y"), 0.0, -TAU * 4.0, TAU * 4.0)
 	player.force_update_transform()
-	player.health = _safe_float(pdata.get("health"), 100.0, 1.0, 100.0)
-	player.stamina = _safe_float(pdata.get("stamina"), 100.0, 0.0, 100.0)
-	player.vitality.armor = _safe_float(pdata.get("armor"), 0.0, 0.0, 150.0)
-	player.armor_plates = _safe_int(pdata.get("armor_plates"), 0, 0, 12)
+	player.health = SaveManager.safe_float(pdata.get("health"), 100.0, 1.0, 100.0)
+	player.stamina = SaveManager.safe_float(pdata.get("stamina"), 100.0, 0.0, 100.0)
+	player.vitality.armor = SaveManager.safe_float(pdata.get("armor"), 0.0, 0.0, 150.0)
+	player.armor_plates = SaveManager.safe_int(pdata.get("armor_plates"), 0, 0, 12)
 	player.set_crouched(bool(pdata.get("crouched", false)))
 	player.owned_weapons.clear()
 	var owned_raw: Variant = pdata.get("owned_weapons", [])
 	if owned_raw is Array:
 		for wid in owned_raw:
-			var id_int := _safe_int(wid, 0, 0, 4)
+			var id_int := SaveManager.safe_int(wid, 0, 0, 4)
 			if id_int > 0 and not player.owned_weapons.has(id_int):
 				player.owned_weapons.append(id_int)
 	player.ammo = {1: 0, 2: 0, 3: 0, 4: 0}
@@ -611,55 +685,94 @@ func apply_saved_state(data: Dictionary) -> bool:
 		for k in ammo_raw:
 			var wkey := str(k).to_int() if str(k).is_valid_int() else 0
 			if wkey in [1, 2, 3, 4]:
-				player.ammo[wkey] = _safe_int(ammo_raw[k], 0, 0, 9999)
+				player.ammo[wkey] = SaveManager.safe_int(ammo_raw[k], 0, 0, 9999)
 	player.magazines = {}
 	var mag_raw: Variant = pdata.get("magazines", {})
 	if mag_raw is Dictionary:
 		for k in mag_raw:
 			var wkey := str(k).to_int() if str(k).is_valid_int() else 0
 			if wkey in [1, 2, 3, 4]:
-				player.magazines[wkey] = _safe_int(mag_raw[k], 0, 0, 200)
-	var saved_w := _safe_int(pdata.get("weapon"), Arsenal.Id.NONE, Arsenal.Id.NONE, Arsenal.Id.SHOTGUN)
+				player.magazines[wkey] = SaveManager.safe_int(mag_raw[k], 0, 0, 200)
+	var saved_w := SaveManager.safe_int(pdata.get("weapon"), Arsenal.Id.NONE, Arsenal.Id.NONE, Arsenal.Id.SHOTGUN)
 	player.weapon = saved_w if (saved_w == Arsenal.Id.NONE or player.owned_weapons.has(saved_w)) else Arsenal.Id.NONE
 
-	var cdata: Dictionary = data.get("coupe", {}) if data.get("coupe") is Dictionary else {}
-	if coupe and not cdata.is_empty():
-		coupe.repair()
-		coupe.global_position = SaveManager.array_to_vec3(cdata.get("pos"), city.coupe_spawn)
-		coupe.rotation.y = _safe_float(cdata.get("rot_y"), city.coupe_facing, -TAU * 4.0, TAU * 4.0)
-		coupe.speed = 0.0
-		coupe.hp = _safe_float(cdata.get("hp"), 100.0, 0.0, 100.0)
-		coupe.stolen = bool(cdata.get("stolen", _stolen))
-		coupe.wrecked = bool(cdata.get("wrecked", false))
-		coupe.exploded = bool(cdata.get("exploded", false))
-		if coupe.exploded:
-			coupe._char_vehicle_visuals()
+	var veh_by_id := _collect_vehicles_by_id()
+	var air_by_id := _collect_aircraft_by_id()
+	var vehicles_raw: Variant = data.get("vehicles")
+	if vehicles_raw is Array and not (vehicles_raw as Array).is_empty():
+		var seen_veh_ids: Dictionary[String, bool] = {}
+		for raw_v in vehicles_raw:
+			if not (raw_v is Dictionary):
+				continue
+			var vd := raw_v as Dictionary
+			var vid := SaveManager.safe_str(vd.get("id"))
+			if vid == "":
+				continue
+			seen_veh_ids[vid] = true
+			var target_v: Vehicle = veh_by_id.get(vid)
+			if target_v == null and vid.begins_with("cop_dyn:"):
+				target_v = _make_cop(Vector3.ZERO, cops.size(), vid)
+				veh_by_id[vid] = target_v
+			if target_v != null:
+				target_v.apply_save_dict(vd)
+		_cleanup_dynamic_cops(seen_veh_ids)
+	else:
+		var empty_keep: Dictionary[String, bool] = {}
+		_cleanup_dynamic_cops(empty_keep)
+		var cdata: Dictionary = data.get("coupe", {}) if data.get("coupe") is Dictionary else {}
+		if coupe and not cdata.is_empty():
+			var legacy_coupe := cdata.duplicate()
+			if SaveManager.array_to_vec3(cdata.get("pos"), Vector3.INF) == Vector3.INF:
+				legacy_coupe["pos"] = SaveManager.vec3_to_array(city.coupe_spawn)
+			var raw_rot: Variant = cdata.get("rot_y")
+			if not ((raw_rot is int or raw_rot is float) and is_finite(float(raw_rot))):
+				legacy_coupe["rot_y"] = city.coupe_facing
+			legacy_coupe["stolen"] = bool(cdata.get("stolen", _stolen))
+			legacy_coupe["ai_enabled"] = false
+			coupe.apply_save_dict(legacy_coupe)
+
+	var aircraft_raw: Variant = data.get("aircraft")
+	if aircraft_raw is Array:
+		for raw_a in aircraft_raw:
+			if not (raw_a is Dictionary):
+				continue
+			var ad := raw_a as Dictionary
+			var aid := SaveManager.safe_str(ad.get("id"))
+			var target_air: Aircraft = air_by_id.get(aid)
+			if aid != "" and target_air != null:
+				target_air.apply_save_dict(ad)
 
 	var wdata: Dictionary = data.get("wanted", {}) if data.get("wanted") is Dictionary else {}
 	if heat:
 		heat.clear()
-		heat.heat = _safe_float(wdata.get("heat"), 0.0, 0.0, 100.0)
-		heat.stars = _safe_int(wdata.get("stars"), 0, 0, WantedSystem.MAX_STARS)
-		heat.last_crime = str(wdata.get("last_crime", ""))
+		heat.heat = SaveManager.safe_float(wdata.get("heat"), 0.0, 0.0, 100.0)
+		heat.stars = SaveManager.safe_int(wdata.get("stars"), 0, 0, WantedSystem.MAX_STARS)
+		heat.last_crime = SaveManager.safe_str(wdata.get("last_crime"))
 		_last_wanted = heat.stars
 		hud.set_crime(heat.label() if heat.stars > 0 else "")
 
 	var cam_data: Dictionary = data.get("camera", {}) if data.get("camera") is Dictionary else {}
 	if camera:
-		camera.yaw = _safe_float(cam_data.get("yaw"), camera.yaw, -TAU * 4.0, TAU * 4.0)
-		camera.pitch = _safe_float(cam_data.get("pitch"), camera.pitch, -1.5, 1.5)
+		camera.yaw = SaveManager.safe_float(cam_data.get("yaw"), camera.yaw, -TAU * 4.0, TAU * 4.0)
+		camera.pitch = SaveManager.safe_float(cam_data.get("pitch"), camera.pitch, -1.5, 1.5)
 		camera.set_first_person(bool(cam_data.get("first_person", camera.first_person)))
-		camera.shoulder = -1.0 if _safe_float(cam_data.get("shoulder"), 1.0, -1.0, 1.0) < 0.0 else 1.0
+		camera.shoulder = -1.0 if SaveManager.safe_float(cam_data.get("shoulder"), 1.0, -1.0, 1.0) < 0.0 else 1.0
 
-	if bool(pdata.get("in_coupe", false)) and coupe and not coupe.wrecked:
-		active_vehicle = coupe
-		coupe.occupied = true
-		coupe.ai_enabled = false
-		player.in_vehicle = true
-		player.set_hidden(true)
-		camera.follow = coupe
-		camera.set_vehicle_mode(true)
-		touch.set_driving(true)
+	var active_air_id := SaveManager.safe_str(data.get("active_aircraft_id"))
+	var active_veh_id := SaveManager.safe_str(data.get("active_vehicle_id"))
+	if active_veh_id == "" and bool(pdata.get("in_coupe", false)):
+		active_veh_id = "coupe"
+	if active_air_id != "" and air_by_id.has(active_air_id):
+		var seat_jet := air_by_id[active_air_id]
+		if seat_jet and not seat_jet.wrecked:
+			_seat_in_aircraft(seat_jet)
+	elif active_veh_id != "" and veh_by_id.has(active_veh_id):
+		var seat_v := veh_by_id[active_veh_id]
+		if seat_v and not seat_v.exploded and (not seat_v.wrecked or seat_v.burning):
+			_seat_in_vehicle(seat_v)
+		elif seat_v and player.global_position.distance_to(seat_v.global_position) < 2.6:
+			player.global_position = seat_v.global_position + seat_v.global_transform.basis.x * 2.4 + Vector3(0, 0.1, 0)
+			player.force_update_transform()
 
 	if a11y:
 		a11y.reset_state()
@@ -920,17 +1033,7 @@ func _enter_vehicle(v: Vehicle) -> void:
 			if is_instance_valid(self) and is_instance_valid(player) and not paused and phase not in [Phase.TITLE, Phase.BUSTED, Phase.WASTED]:
 				player.locked = false
 		)
-	active_vehicle = v
-	v.a11y_drive_override = Vector2.ZERO
-	v.a11y_handbrake = false
-	v.occupied = true
-	v.ai_enabled = false
-	v.fleeing = false
-	player.in_vehicle = true
-	player.set_hidden(true)
-	camera.follow = v
-	camera.set_vehicle_mode(true)
-	touch.set_driving(true)
+	_seat_in_vehicle(v)
 	if v.kind == Vehicle.Kind.COUPE and not _stolen:
 		_stolen = true
 		v.stolen = true
@@ -965,13 +1068,7 @@ func _nearest_aircraft() -> Aircraft:
 
 func _enter_aircraft(jet: Aircraft) -> void:
 	_firing = false
-	active_aircraft = jet
-	jet.occupied = true
-	player.in_vehicle = true
-	player.set_hidden(true)
-	camera.follow = jet
-	camera.set_aircraft_mode(true)
-	touch.set_driving(true)
+	_seat_in_aircraft(jet)
 	_report("steal_jet", jet.global_position)
 	A11yUIHelper.say("Boarded %s" % jet.display_name, true, 2, &"a11y_vehicle")
 
@@ -1143,11 +1240,14 @@ func _exit_vehicle() -> void:
 	var v := active_vehicle
 	v.a11y_drive_override = Vector2.ZERO
 	v.a11y_handbrake = false
+	v.throttle_input = 0.0
 	player.global_position = v.global_position + v.global_transform.basis.x * 1.8 + Vector3(0, 0.1, 0)
 	player.rotation.y = v.rotation.y
 	v.occupied = false
-	if (v.kind == Vehicle.Kind.COP or v.kind == Vehicle.Kind.CIVILIAN) and not v.wrecked and not v.exploded:
+	if (v.kind == Vehicle.Kind.COP or v.kind == Vehicle.Kind.CIVILIAN) and v.has_driver and not v.wrecked and not v.exploded:
 		v.ai_enabled = true
+	else:
+		v.ai_enabled = false
 	player.in_vehicle = false
 	player.set_hidden(false)
 	active_vehicle = null
@@ -1329,7 +1429,7 @@ func _update_cops() -> void:
 	last_seen_mark.global_position = heat.last_seen
 	for idx in cops.size():
 		var cop := cops[idx]
-		if not is_instance_valid(cop) or cop.occupied:
+		if not is_instance_valid(cop) or cop.occupied or not cop.has_driver or cop.wrecked or cop.exploded:
 			continue
 		cop.ai_enabled = true
 		cop.chase_slot = idx
@@ -1348,12 +1448,11 @@ func _update_civilians() -> void:
 	var hot := heat.stars > 0
 	for node in get_tree().get_nodes_in_group("vehicles"):
 		var v := node as Vehicle
-		if v == null or v.occupied:
+		if v == null or not is_ancestor_of(v) or v.occupied:
 			continue
-		if v.kind == Vehicle.Kind.CIVILIAN or v.kind == Vehicle.Kind.PARKED:
-			if hot and v.kind == Vehicle.Kind.CIVILIAN:
-				v.fleeing = true
-				v.ai_enabled = true
+		if hot and v.kind == Vehicle.Kind.CIVILIAN and v.has_driver and not v.wrecked and not v.exploded:
+			v.fleeing = true
+			v.ai_enabled = true
 
 
 func _tracked() -> Node3D:

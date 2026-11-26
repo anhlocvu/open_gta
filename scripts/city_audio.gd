@@ -8,6 +8,10 @@ var _engine: AudioStreamPlayer
 var _radio: AudioStreamPlayer
 var _step_cd := 0.0
 var _step_side := 0
+var _engine_vehicle_id := 0
+var _engine_rpm := 0.0
+var _engine_pitch := 0.74
+var _engine_gain := 0.0
 var _foot_a: AudioStreamWAV
 var _foot_b: AudioStreamWAV
 var _engine_loop: AudioStreamWAV
@@ -36,7 +40,7 @@ func tick(delta: float, body: Player, vehicle: Vehicle, rank_up: int) -> void:
 	if _steps:
 		_tick_steps(body)
 	if _engine:
-		_tick_engine(vehicle)
+		_tick_engine(delta, vehicle)
 
 
 func _tick_steps(body: Player) -> void:
@@ -52,15 +56,44 @@ func _tick_steps(body: Player) -> void:
 	_step_cd = 0.32 if body.sprinting else 0.48
 
 
-func _tick_engine(vehicle: Vehicle) -> void:
-	if vehicle == null or not vehicle.occupied:
+func _tick_engine(delta: float, vehicle: Vehicle) -> void:
+	if vehicle == null or not vehicle.occupied or vehicle.exploded:
+		_engine_vehicle_id = 0
+		_engine_rpm = 0.0
+		_engine_pitch = engine_pitch(0.0, 1.0)
+		_engine_gain = 0.0
 		if _engine.playing:
 			_engine.stop()
 		return
 	var cap := maxf(vehicle.max_speed, 1.0)
-	var amount := clampf(absf(vehicle.speed) / cap, 0.0, 1.0)
-	_engine.pitch_scale = engine_pitch(vehicle.speed, cap)
-	_engine.volume_db = lerpf(-18.0, -7.0, amount)
+	var speed_norm := clampf(absf(vehicle.speed) / cap, 0.0, 1.0)
+	var raw_throttle := vehicle.throttle_input
+	var driving_effort := (raw_throttle > 0.05 and vehicle.speed >= -0.2) or (raw_throttle < -0.05 and vehicle.speed <= 0.2)
+	var drive_amt := clampf(absf(raw_throttle), 0.0, 1.0) if driving_effort else 0.0
+	var vid := vehicle.get_instance_id()
+	if vid != _engine_vehicle_id:
+		_engine_vehicle_id = vid
+		_engine_rpm = speed_norm * 0.35
+		_engine_pitch = engine_pitch(_engine_rpm * cap, cap)
+		_engine_gain = 0.0
+
+	var target_rpm := clampf(speed_norm * 0.92 + drive_amt * 0.08, 0.0, 1.0) if driving_effort else speed_norm
+	var dt := maxf(delta, 0.0)
+	if target_rpm > _engine_rpm:
+		var exp_up := lerpf(_engine_rpm, target_rpm, 1.0 - exp(-2.4 * dt))
+		_engine_rpm = minf(exp_up, _engine_rpm + 0.46 * dt)
+	else:
+		var exp_dn := lerpf(_engine_rpm, target_rpm, 1.0 - exp(-1.9 * dt))
+		_engine_rpm = maxf(exp_dn, _engine_rpm - 0.36 * dt)
+
+	var target_pitch := engine_pitch(_engine_rpm * cap, cap)
+	var exp_pitch := lerpf(_engine_pitch, target_pitch, 1.0 - exp(-5.0 * dt))
+	_engine_pitch = move_toward(_engine_pitch, exp_pitch, 0.44 * dt)
+	_engine_gain = move_toward(_engine_gain, 1.0, 4.5 * dt)
+
+	_engine.pitch_scale = _engine_pitch
+	var base_db := lerpf(-18.5, -8.5, _engine_rpm) + drive_amt * 1.8
+	_engine.volume_db = lerpf(-32.0, base_db, _engine_gain)
 	if not _engine.playing:
 		_engine.play()
 
@@ -76,7 +109,7 @@ func _player(stream: AudioStream, volume: float, bus_name := "Master") -> AudioS
 
 static func engine_pitch(speed: float, cap: float) -> float:
 	var amount := clampf(absf(speed) / maxf(cap, 1.0), 0.0, 1.0)
-	return lerpf(0.78, 1.95, amount)
+	return lerpf(0.74, 1.48, pow(amount, 0.85))
 
 
 static func make_footstep(side: int) -> AudioStreamWAV:
@@ -94,17 +127,21 @@ static func make_footstep(side: int) -> AudioStreamWAV:
 
 
 static func make_engine() -> AudioStreamWAV:
-	var period := 441
-	var cycles := 8
+	var period := 525
+	var cycles := 12
+	var total := period * cycles
 	var samples := PackedFloat32Array()
-	samples.resize(period * cycles)
-	for i in samples.size():
+	samples.resize(total)
+	for i in total:
+		var u := float(i) / float(total)
 		var phase := float(i % period) / float(period)
-		var sample := sin(phase * TAU) * 0.62
-		sample += sin(phase * TAU * 2.0) * 0.22
-		sample += sin(phase * TAU * 3.0) * 0.08
-		sample += sin(phase * TAU * 5.0) * 0.04
-		samples[i] = clampf(sample * 1.25, -1.0, 1.0)
+		var fire := sin(phase * TAU) * 0.46
+		fire += sin(phase * TAU * 2.0 + 0.42) * 0.28
+		fire += sin(phase * TAU * 3.0 + 0.95) * 0.14
+		fire += sin(phase * TAU * 4.0 + 1.45) * 0.06
+		var sub := sin(u * TAU * 6.0) * 0.18 + sin(u * TAU * 18.0 + 0.7) * 0.09 + sin(u * TAU * 30.0 + 1.3) * 0.04
+		var air := (sin(u * TAU * 7.0) + sin(u * TAU * 11.0 + 1.1) + sin(u * TAU * 17.0 + 2.2) + sin(u * TAU * 23.0 + 0.5)) * 0.025
+		samples[i] = clampf(tanh((fire + sub + air) * 1.15) * 0.72, -1.0, 1.0)
 	return _pcm(samples, true)
 
 
