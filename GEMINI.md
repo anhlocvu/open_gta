@@ -325,4 +325,40 @@ Split the Open World Radar's combined `Places and Vehicles` category into separa
 - **Windows Release Export**:
   - Exported `export/windows/OperationChaos.exe` (`109,149,184` bytes) and `export/windows/OperationChaos.pck` (`114,896,060` bytes).
   - Verified `OperationChaos.exe --headless --quit-after 5` exits cleanly (`exit code 0`).
-- Note: Interactive gameplay with live Windows `NVDA.exe` speech output remains to be manually verified by the user.
+- Note: Interactive gameplay with live Windows `NVDA.exe` speech output remains to be manually confirmed by the user.
+
+
+## Session: 2026-11-26 — Smart Entrance-Aware Auto-Walk, Auto-Drive & Landmark Clearance
+
+### Summary
+Fixed Auto-Walk trapping inside `Vehicle Dealership` (and enclosed storefronts `Gun Shop` / `Bar`), fixed `Pay and Spray` / `Drop Warehouse` building collider overlaps that caused Auto-Drive to reverse and circle endlessly, fixed long-distance Auto-Walk (`Hospital` -> `Vehicle Dealership`) backward-snapping loops, and upgraded `RoadGraph` + `A11yNavigation` into an entrance/exit-aware, multi-layer navigation system governed by SpecKit (`specs/009-smart-navigation-entrances/`) and ECC (`tdd-guide` + `code-reviewer`).
+
+### Key Changes
+- **Service Pad Clearance & Navigation Zone Registry (`scripts/city.gd`, `scripts/city_nav_builder.gd`)**:
+  - Shifted `spray_pos` (`Pay and Spray`, `mid_z + 6.5`) and `garage_pos` (`Drop Warehouse`, `mid_z + 6.0`) onto open front aprons with their buildings set back (`-11.5m` / `-12.0m`), south-facing `SPRAY` / `DROP` signs, and relocated warehouse crates so `_spray` and `_garage` pads are 100% clear of static wall colliders.
+  - Added `CityNavBuilder` (`scripts/city_nav_builder.gd`) defining `nav_zones` (`bounds`, `interior_pos`, `door_pos`, `apron_pos`, `drive_pos`, `enclosed`, `walk_only_entry`, `parent_zone`) for `army_hangar`, `army_base`, `dealership`, `gun_shop`, `bar`, `spray`, `garage`, `hospital`, and `station`, plus `City.resolve_drive_target()` and `City.find_containing_zone()`.
+- **Multi-Layer Portal & Corridor-Width `RoadGraph` (`scripts/road_graph.gd`, `scripts/city_nav_builder.gd`)**:
+  - Extended `RoadGraph` with `node_kinds` (`"road"`, `"sidewalk"`, `"park"`, `"apron"`, `"door"`, `"interior"`), `edge_modes` (`"both"` vs `"walk"`), and `grid_count` isolation (keeping traffic/cop AI on the street grid).
+  - Added shared `RoadGraph.corridor_clear()` (3-ray width check), `"walk"`/`"drive"` edge filtering in `astar_path()`, park shortcuts, front-sidewalk links, and automatic portal anchoring (`_zone_anchor()`) so enclosed interiors route cleanly through their open doorway/gate while nested `army_base <-> army_hangar` routes stay internal.
+- **Monotonic Anti-Loop `A11yNavigation` (`scripts/accessibility/a11y_navigation.gd`)**:
+  - Separated static macro A* (`mask = 1`) from dynamic local avoidance (`mask = 1 | 4 | 8`) and enforced monotonic forward `_path_idx` progression in `_refresh_route()`, eliminating 0.5s backward intersection snapping when vehicles pass on the street.
+  - Upgraded `_tick_autowalk()` with a 7-ray forward steering fan (`_scan_walk_fan()`), `_avoid_side` hysteresis, sharp-turn stride throttling (`> 45°` / `> 95°`), and wall-clear arrival gating (`_corridor_clear` on `dist_total <= 2.2`).
+  - Upgraded `_tick_autodrive()` with `resolve_drive_target()` (stopping cleanly at exterior aprons outside walk-in storefronts `"Arrived outside ..."`), pad-back-wall steer suppression (`obstacle_before_pad`), and `_update_progress_tracker()` net-progress anti-circle loop detection (`_best_wp_dist` / `_no_progress_timer`) for both walking and driving.
+
+### Verified Checks (Post-Final-Edit)
+- `tests/test_accessibility.gd`: 94 checks, 0 failures
+- `tests/test_dealership_and_dev.gd`: 21 checks, 0 failures
+- `tests/test_accessibility_speech.gd`: 20 checks, 0 failures
+- `tests/test_save_and_audio.gd`: 63 checks, 0 failures
+- `tests/test_combat.gd`: 44 checks, 0 failures
+- `tests/test_cover.gd`: 10 checks, 0 failures
+- `tests/test_game_integration.gd`: 18 checks, 0 failures
+- `tests/test_harbor_feel.gd`: 13 checks, 0 failures
+- `tests/test_stage_one.gd`: 24 checks, 0 failures
+- Total headless verified: **307 checks, 0 failures**.
+- `godot_console.exe --headless --path . --quit-after 5`: exit `0`.
+- **Windows Release Export**:
+  - Exported `export/windows/OperationChaos.exe` (`109,149,184` bytes) and `export/windows/OperationChaos.pck` (`114,910,572` bytes).
+  - Verified `OperationChaos.exe --headless --quit-after 5` exits cleanly (`exit code 0`).
+- Note: Interactive driving/walking feel and live Windows `NVDA.exe` speech output remain to be manually verified by the user.
+

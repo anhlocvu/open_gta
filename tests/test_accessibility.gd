@@ -465,6 +465,180 @@ func run() -> void:
 				found_coupe = true
 		check(found_coupe, "My Assets tracks hijacked vehicle city-wide beyond 120m")
 
+		# 8. Smart Entrance-Aware Navigation & Pad Clearance (Spec 009)
+		check(_point_clear.call(ow.city.spray_pos + Vector3(0.0, 1.0, 0.0)) and _point_clear.call(ow.city.spray_pos + Vector3(0.0, 1.0, -3.5)), "Pay and Spray pad is completely clear of building wall colliders")
+		check(_point_clear.call(ow.city.garage_pos + Vector3(0.0, 1.0, 0.0)) and _point_clear.call(ow.city.garage_pos + Vector3(0.0, 1.0, -3.5)), "Drop Warehouse pad is completely clear of building wall colliders")
+
+		# 8a. Auto-Drive from avenue arrives cleanly onto Pay and Spray pad without circling
+		ow.coupe.repair()
+		ow.coupe.speed = 0.0
+		ow.coupe.velocity = Vector3.ZERO
+		ow.coupe.global_position = Vector3(ow.city.ave_xs[1], 0.35, ow.city.st_zs[8])
+		ow.coupe.rotation.y = -PI * 0.5
+		ow.coupe.force_update_transform()
+		ow._enter_vehicle(ow.coupe)
+		await frames(2)
+		a11y.radar.locked_target_id = "place:spray"
+		a11y.nav.target_label = "Pay and Spray"
+		a11y.nav.target_position = ow.city.spray_pos
+		a11y.nav.start_autodrive()
+		for _i in 650:
+			await physics_frame
+			await process_frame
+			if not a11y.nav.autowalk_active:
+				break
+		await frames(4)
+		check(not a11y.nav.autowalk_active and ow.city.spray_contains(ow.coupe), "Auto-Drive arrives cleanly inside Pay and Spray pad without looping")
+		a11y.nav.stop_autowalk(ow.player, "", ow.coupe)
+		ow.coupe.speed = 0.0
+		ow._exit_vehicle()
+		await frames(2)
+
+		# 8b. Auto-Walk inside Vehicle Dealership escapes through doorway to car parked behind building
+		ow.coupe.global_position = Vector3(ow.city.dealership_pos.x, 0.35, ow.city.st_zs[4])
+		ow.coupe.rotation.y = PI * 0.5
+		ow.coupe.speed = 0.0
+		ow.coupe.force_update_transform()
+		ow.player.global_position = ow.city.dealership_pos + Vector3(0.0, 0.0, -5.0)
+		ow.player.velocity = Vector3.ZERO
+		ow.camera.yaw = 0.0
+		await frames(2)
+		a11y.radar.locked_target_id = "veh:%d" % ow.coupe.get_instance_id()
+		a11y.nav.target_label = ow.coupe.display_name
+		a11y.nav.target_position = ow.coupe.global_position
+		a11y.nav.start_autowalk()
+		for _i in 1200:
+			await physics_frame
+			await process_frame
+			if not a11y.nav.autowalk_active:
+				break
+		check(not a11y.nav.autowalk_active and ow.player.global_position.distance_to(ow.coupe.global_position) <= 3.0, "Auto-Walk inside Dealership exits through doorway to exterior car behind building")
+		a11y.nav.stop_autowalk(ow.player)
+
+		# 8c. Auto-Walk from Gun Shop interior escapes through south doorway to street behind building
+		var gun_back_dest := Vector3(ow.city.gun_shop_pos.x, 0.15, ow.city.st_zs[3])
+		ow.player.global_position = ow.city.gun_shop_pos + Vector3(0.0, 0.0, -1.5)
+		ow.player.velocity = Vector3.ZERO
+		ow.camera.yaw = 0.0
+		await frames(2)
+		a11y.radar.locked_target_id = ""
+		a11y.nav.target_label = "North Street"
+		a11y.nav.target_position = gun_back_dest
+		a11y.nav.start_autowalk()
+		for _i in 950:
+			await physics_frame
+			await process_frame
+			if not a11y.nav.autowalk_active:
+				break
+		check(not a11y.nav.autowalk_active and ow.player.global_position.distance_to(gun_back_dest) <= 3.0, "Auto-Walk inside Gun Shop exits cleanly through south doorway")
+		a11y.nav.stop_autowalk(ow.player)
+
+		# 8d. Long-distance Auto-Walk from Hospital to Vehicle Dealership routes monotonically without backward loops
+		var excl_rid: Array[RID] = [ow.player.get_rid()]
+		var hosp_to_dealer: Dictionary = ow.roads.astar_path(ow.city.hospital_pos, ow.city.dealership_pos, {}, ow.player.get_world_3d().direct_space_state, excl_rid, "walk", 0.42)
+		var h2d_pts: PackedVector3Array = hosp_to_dealer.points
+		check(h2d_pts.size() >= 6 and h2d_pts[h2d_pts.size() - 1].distance_to(ow.city.dealership_pos) < 1.0, "Hospital to Dealership walk graph builds complete multi-block route via doorway")
+		ow.player.global_position = ow.city.hospital_pos
+		ow.player.velocity = Vector3.ZERO
+		ow.camera.yaw = 0.0
+		await frames(2)
+		a11y.radar.locked_target_id = "place:dealership"
+		a11y.nav.target_label = "Vehicle Dealership"
+		a11y.nav.target_position = ow.city.dealership_pos
+		a11y.nav.start_autowalk()
+		var start_h_dist: float = ow.player.global_position.distance_to(ow.city.dealership_pos)
+		var prev_idx := a11y.nav._path_idx
+		var idx_went_backward := false
+		for _i in 650:
+			await physics_frame
+			await process_frame
+			if a11y.nav._path_idx < prev_idx:
+				idx_went_backward = true
+			prev_idx = a11y.nav._path_idx
+		var after_h_dist: float = ow.player.global_position.distance_to(ow.city.dealership_pos)
+		check(a11y.nav.autowalk_active and not idx_went_backward and (start_h_dist - after_h_dist) > 35.0, "Hospital to Dealership Auto-Walk advances monotonically across intersections without backward snaps")
+		a11y.nav.stop_autowalk(ow.player)
+
+		# 8d-2. Approaching Vehicle Dealership from street corner enters cleanly through apron and doorway
+		ow.player.global_position = Vector3(ow.city.ave_xs[7], 0.15, ow.city.st_zs[5])
+		ow.player.velocity = Vector3.ZERO
+		ow.camera.yaw = 0.0
+		await frames(2)
+		a11y.nav.target_label = "Vehicle Dealership"
+		a11y.nav.target_position = ow.city.dealership_pos
+		a11y.nav.start_autowalk()
+		for _i in 520:
+			await physics_frame
+			await process_frame
+			if not a11y.nav.autowalk_active:
+				break
+		check(not a11y.nav.autowalk_active and ow.player.global_position.distance_to(ow.city.dealership_pos) <= 2.8, "Auto-Walk from street arrives cleanly inside Vehicle Dealership via apron and doorway")
+		a11y.nav.stop_autowalk(ow.player)
+
+		# 8e. Auto-Drive to walk-in storefront (Vehicle Dealership) pulls up to exterior apron cleanly
+		ow.coupe.repair()
+		ow.coupe.speed = 0.0
+		ow.coupe.velocity = Vector3.ZERO
+		ow.coupe.global_position = Vector3(ow.city.ave_xs[6], 0.35, ow.city.st_zs[6])
+		ow.coupe.rotation.y = 0.0
+		ow.coupe.force_update_transform()
+		ow._enter_vehicle(ow.coupe)
+		await frames(2)
+		a11y.radar.locked_target_id = "place:dealership"
+		a11y.nav.target_label = "Vehicle Dealership"
+		a11y.nav.target_position = ow.city.dealership_pos
+		a11y.nav.start_autodrive()
+		for _i in 500:
+			await physics_frame
+			await process_frame
+			if not a11y.nav.autowalk_active:
+				break
+		check(not a11y.nav.autowalk_active and ow.coupe.hp == 100.0 and ow.coupe.global_position.distance_to(ow.city.dealership_spawn_pos) <= 10.0, "Auto-Drive to Vehicle Dealership stops cleanly at exterior apron without hitting storefront")
+		a11y.nav.stop_autowalk(ow.player, "", ow.coupe)
+		ow.coupe.speed = 0.0
+		ow._exit_vehicle()
+		await frames(2)
+
+		# 8f. Net-progress anti-circle loop detector triggers recovery even while moving
+		a11y.nav.reset(ow.player)
+		a11y.nav._best_wp_dist = 10.0
+		var wp_dummy := Vector3(10.0, 0.0, 0.0)
+		for step_k in 10:
+			var angle_k := float(step_k) * 0.6
+			var orbit_pos := Vector3(cos(angle_k) * 10.0, 0.0, sin(angle_k) * 10.0)
+			a11y.nav._update_progress_tracker(orbit_pos, wp_dummy, 0.5, 0.65, 0.9)
+		check(a11y.nav._no_progress_timer >= 4.2, "Anti-circle progress tracker detects circular wandering without reducing waypoint distance")
+		a11y.nav.reset(ow.player)
+
+		# 8g. Army Base portal order & internal Base->Hangar routing avoid perimeter gate detour
+		var base_zone: Dictionary = {}
+		for nz in ow.city.nav_zones:
+			if str(nz.get("id", "")) == "army_base":
+				base_zone = nz
+		check(not base_zone.is_empty() and float((base_zone["apron_pos"] as Vector3).z) < float((base_zone["door_pos"] as Vector3).z) and float((base_zone["door_pos"] as Vector3).z) < float((base_zone["interior_pos"] as Vector3).z), "Army Base portal chain orders apron -> gate -> interior monotonically")
+		var hangar_dest: Vector3 = ow.city.crate_spawns[0]
+		var base_to_hangar: Dictionary = ow.roads.astar_path(ow.city.base_pos, hangar_dest, {}, ow.player.get_world_3d().direct_space_state, excl_rid, "walk", 0.42)
+		var bh_pts: PackedVector3Array = base_to_hangar.points
+		var detoured_to_gate := false
+		for bp in bh_pts:
+			if bp.z < ow.city.base_pos.z - 20.0:
+				detoured_to_gate = true
+		check(not detoured_to_gate and bh_pts.size() >= 2, "Army Base to Hangar walk path routes internally without backtracking to outer gate")
+
+		# 8h. Auto-Walk does not falsely arrive through a solid storefront wall
+		ow.coupe.global_position = Vector3(ow.city.dealership_pos.x - 9.2, 0.35, ow.city.dealership_pos.z - 4.5)
+		ow.coupe.speed = 0.0
+		ow.coupe.force_update_transform()
+		ow.player.global_position = Vector3(ow.city.dealership_pos.x - 7.3, 0.15, ow.city.dealership_pos.z - 4.5)
+		ow.player.velocity = Vector3.ZERO
+		await frames(1)
+		a11y.nav.target_label = ow.coupe.display_name
+		a11y.nav.target_position = ow.coupe.global_position
+		a11y.nav.start_autowalk()
+		await frames(4)
+		check(a11y.nav.autowalk_active, "Auto-Walk does not prematurely declare arrival through solid Dealership wall")
+		a11y.nav.stop_autowalk(ow.player)
+
 	ow.queue_free()
 	await process_frame
 	print("ACCESSIBILITY_SUITE: %d checks, %d failures" % [checks, failures])

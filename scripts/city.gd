@@ -49,10 +49,11 @@ var _facades: Dictionary = {}
 var _mat_cache: Dictionary = {}
 var _box_batches: Dictionary = {}
 var _unit_box: BoxMesh
+var nav_zones: Array[Dictionary] = []
 
 
 func make_graph() -> RoadGraph:
-	return RoadGraph.grid(ave_xs, st_zs)
+	return CityNavBuilder.build_graph(self)
 
 
 func build() -> void:
@@ -170,15 +171,28 @@ func _grid() -> void:
 	player_spawn = Vector3(16.0, 0.15, st_zs[8] + 7.6)
 	coupe_spawn = Vector3(ave_xs[6] - 6.0, 0.35, st_zs[8])
 	coupe_facing = -PI * 0.5
-	garage_pos = Vector3((ave_xs[4] + ave_xs[5]) * 0.5, 0.15, (st_zs[1] + st_zs[2]) * 0.5)
+	garage_pos = Vector3((ave_xs[4] + ave_xs[5]) * 0.5, 0.15, (st_zs[1] + st_zs[2]) * 0.5 + 6.0)
 	hospital_pos = Vector3((ave_xs[8] + ave_xs[9]) * 0.5, 0.15, (st_zs[12] + st_zs[13]) * 0.5 + 7.2)
 	station_pos = Vector3((ave_xs[9] + ave_xs[10]) * 0.5, 0.15, (st_zs[8] + st_zs[9]) * 0.5 + 7.2)
-	spray_pos = Vector3((ave_xs[1] + ave_xs[2]) * 0.5, 0.15, (st_zs[7] + st_zs[8]) * 0.5)
+	spray_pos = Vector3((ave_xs[1] + ave_xs[2]) * 0.5, 0.15, (st_zs[7] + st_zs[8]) * 0.5 + 6.5)
 	gun_shop_pos = Vector3((ave_xs[7] + ave_xs[8]) * 0.5, 0.15, (st_zs[3] + st_zs[4]) * 0.5)
 	bar_pos = Vector3((ave_xs[3] + ave_xs[4]) * 0.5, 0.15, (st_zs[10] + st_zs[11]) * 0.5)
 	dealership_pos = Vector3((ave_xs[6] + ave_xs[7]) * 0.5, 0.15, (st_zs[4] + st_zs[5]) * 0.5 + 3.0)
 	dealership_spawn_pos = Vector3((ave_xs[6] + ave_xs[7]) * 0.5, 0.35, st_zs[5])
 	base_pos = Vector3((ave_xs[2] + ave_xs[3]) * 0.5, 0.15, st_zs[ST_N - 1] + 38.0)
+	_build_nav_zones()
+
+
+func _build_nav_zones() -> void:
+	nav_zones = CityNavBuilder.build_nav_zones(self)
+
+
+func find_containing_zone(pos: Vector3, only_enclosed := true) -> Dictionary:
+	return CityNavBuilder.find_containing_zone(nav_zones, pos, only_enclosed)
+
+
+func resolve_drive_target(pos: Vector3, label := "") -> Dictionary:
+	return CityNavBuilder.resolve_drive_target(self, pos, label)
 
 
 func _ground() -> void:
@@ -245,7 +259,7 @@ func _buildings() -> void:
 	_landmark(Vector3((ave_xs[5] + ave_xs[6]) * 0.5, 0, (st_zs[8] + st_zs[9]) * 0.5), 142.0, "office")
 	_landmark(Vector3((ave_xs[4] + ave_xs[5]) * 0.5, 0, (st_zs[6] + st_zs[7]) * 0.5), 118.0, "concrete")
 	_landmark(Vector3((ave_xs[6] + ave_xs[7]) * 0.5, 0, (st_zs[5] + st_zs[6]) * 0.5), 126.0, "office")
-	_neon_sign(Vector3(garage_pos.x, 7.2, garage_pos.z + 6.0), "DROP")
+	_neon_sign(Vector3(garage_pos.x, 7.2, garage_pos.z - 5.8), "DROP")
 
 
 func _is_park(i: int, j: int) -> bool:
@@ -433,9 +447,9 @@ func _props() -> void:
 	_hydrant(Vector3(ave_xs[5] + 8.4, 0.42, st_zs[5] + 8.2))
 	_planter(Vector3(ave_xs[8] + 12.2, 0.28, st_zs[8] + 8.0))
 	_planter(Vector3(ave_xs[2] - 12.2, 0.28, st_zs[8] - 8.0))
-	_crate(Vector3(garage_pos.x - 4.0, 0.45, garage_pos.z - 8.0))
-	_crate(Vector3(garage_pos.x + 2.0, 0.45, garage_pos.z - 8.0))
-	_crate(Vector3(garage_pos.x - 1.0, 1.2, garage_pos.z - 7.2))
+	_crate(Vector3(garage_pos.x - 10.5, 0.45, garage_pos.z - 6.5))
+	_crate(Vector3(garage_pos.x + 10.5, 0.45, garage_pos.z - 6.5))
+	_crate(Vector3(garage_pos.x - 10.5, 1.35, garage_pos.z - 6.5))
 
 
 func _dumpster(pos: Vector3) -> void:
@@ -517,14 +531,14 @@ func _garage_zone() -> void:
 func _civic_zones() -> void:
 	_building(hospital_pos + Vector3(0, 0, -9.2), Vector3(20, 28, 12), "plaster")
 	_building(station_pos + Vector3(0, 0, -9.2), Vector3(18, 24, 12), "concrete")
-	_building(garage_pos + Vector3(0, 0, -7.0), Vector3(16, 14, 12), "warehouse")
-	_building(spray_pos + Vector3(0, 0, -6.0), Vector3(14, 10, 12), "concrete")
+	_building(garage_pos + Vector3(0, 0, -12.0), Vector3(16, 14, 12), "warehouse")
+	_building(spray_pos + Vector3(0, 0, -11.5), Vector3(14, 10, 12), "concrete")
 	_spray = _pad_zone(spray_pos, Color("3aa0ff"), 9.0)
 	_mesh_box(hospital_pos + Vector3(0, 0.08, 0.0), Vector3(7, 0.05, 5), Palette.mat(Color("144028"), 0.1, 0.5, Color("3dcc6a"), 1.2))
 	_mesh_box(station_pos + Vector3(0, 0.08, 0.0), Vector3(7, 0.05, 5), Palette.mat(Color("1a2038"), 0.1, 0.5, Color("4a66ff"), 1.2))
 	_neon_sign(hospital_pos + Vector3(0, 8.4, -3.0), "HOSP")
 	_neon_sign(station_pos + Vector3(0, 8.4, -3.0), "UNIT")
-	_neon_sign(spray_pos + Vector3(0, 6.2, 3.2), "SPRAY")
+	_neon_sign(spray_pos + Vector3(0, 6.2, -5.3), "SPRAY")
 	_neon_sign(gun_shop_pos + Vector3(0, 5.2, 5.4), "ARMS")
 	_neon_sign(bar_pos + Vector3(0, 5.0, 5.4), "BAR")
 	_neon_sign(dealership_pos + Vector3(0, 5.0, 0.2), "AUTO")

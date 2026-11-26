@@ -1,6 +1,6 @@
 class_name A11yNavigation
 extends RefCounted
-## Keyboard camera turning, 3D audio beacons, obstacle/cover proximity, and resilient Auto-Walk / Auto-Drive.
+## Keyboard camera turning, 3D audio beacons, obstacle/cover proximity, and entrance-aware Auto-Walk / Auto-Drive.
 
 const AUTODRIVE_WALL_SLOW_DIST := 20.0
 const AUTODRIVE_EMERGENCY_DIST := 3.8
@@ -22,8 +22,12 @@ var _obstacle_timer := 0.0
 var _cover_hint_cooldown := 0.0
 var _last_turn_hint := ""
 var _route_timer := 0.0
+var _route_mode := ""
+var _force_reroute := false
 var _cached_waypoint := Vector3.ZERO
 var _cached_dest := Vector3.ZERO
+var _effective_dest := Vector3.ZERO
+var _rerouted_outside := false
 var _path_points := PackedVector3Array()
 var _path_node_ids := PackedInt32Array()
 var _path_idx := 0
@@ -31,6 +35,8 @@ var _blocked_edges: Dictionary = {}
 
 var _progress_anchor := Vector3.ZERO
 var _stall_timer := 0.0
+var _best_wp_dist := INF
+var _no_progress_timer := 0.0
 var _recovery_timer := 0.0
 var _recovery_steer := 0.0
 var _recovery_throttle := 0.0
@@ -51,8 +57,12 @@ func reset(player: Player = null, vehicle: Vehicle = null) -> void:
 	current_waypoint = Vector3.ZERO
 	_last_turn_hint = ""
 	_route_timer = 0.0
+	_route_mode = ""
+	_force_reroute = false
 	_cached_waypoint = Vector3.ZERO
 	_cached_dest = Vector3.ZERO
+	_effective_dest = Vector3.ZERO
+	_rerouted_outside = false
 	_path_points = PackedVector3Array()
 	_path_node_ids = PackedInt32Array()
 	_path_idx = 0
@@ -66,6 +76,8 @@ func reset(player: Player = null, vehicle: Vehicle = null) -> void:
 func _clear_recovery() -> void:
 	_progress_anchor = Vector3.ZERO
 	_stall_timer = 0.0
+	_best_wp_dist = INF
+	_no_progress_timer = 0.0
 	_recovery_timer = 0.0
 	_recovery_steer = 0.0
 	_recovery_throttle = 0.0
@@ -125,8 +137,12 @@ func start_autowalk(mode := "walk") -> void:
 	autopilot_mode = mode
 	_last_turn_hint = ""
 	_route_timer = 0.0
+	_route_mode = ""
+	_force_reroute = true
 	_cached_waypoint = Vector3.ZERO
 	_cached_dest = Vector3.ZERO
+	_effective_dest = Vector3.ZERO
+	_rerouted_outside = false
 	_path_points = PackedVector3Array()
 	_path_node_ids = PackedInt32Array()
 	_path_idx = 0
@@ -153,23 +169,19 @@ func process_camera_turn(camera: CameraRig, settings: A11ySettings, delta: float
 
 
 func _corridor_clear(space: PhysicsDirectSpaceState3D, origin: Vector3, destination: Vector3, half_width: float, exclude_rids: Array[RID], mask: int = 1) -> bool:
-	if space == null:
-		return true
-	var flat := Vector3(destination.x - origin.x, 0.0, destination.z - origin.z)
-	if flat.length_squared() < 0.05:
-		return true
-	var fwd := flat.normalized()
-	var right := Vector3(-fwd.z, 0.0, fwd.x)
-	var up := Vector3.UP * 0.9
-	for off in [0.0, -half_width, half_width]:
-		var shift: Vector3 = right * float(off)
-		var q := PhysicsRayQueryParameters3D.create(origin + up + shift, destination + up + shift, mask, exclude_rids)
-		if not space.intersect_ray(q).is_empty():
-			return false
-	return true
+	return RoadGraph.corridor_clear(space, origin, destination, half_width, exclude_rids, mask, 0.9)
 
 
-func compute_route_waypoint(game: Node, origin: Vector3, destination: Vector3, corridor_half_w := 0.45, mask := 1, extra_exclude: Array[RID] = []) -> Dictionary:
+func _resolve_destination(game: Node, destination: Vector3, mode: String) -> Dictionary:
+	if mode != "drive" or game == null:
+		return {"position": destination, "rerouted_outside": false}
+	var city = game.get("city")
+	if city != null and city.has_method("resolve_drive_target"):
+		return city.resolve_drive_target(destination, target_label)
+	return {"position": destination, "rerouted_outside": false}
+
+
+func compute_route_waypoint(game: Node, origin: Vector3, destination: Vector3, corridor_half_w := 0.42, _mask := 1, extra_exclude: Array[RID] = [], mode := "walk") -> Dictionary:
 	var roads: RoadGraph = game.get("roads") as RoadGraph if game else null
 	var player := game.get("player") as Player if game else null
 	var space: PhysicsDirectSpaceState3D = player.get_world_3d().direct_space_state if (player and player.is_inside_tree()) else null
@@ -179,26 +191,38 @@ func compute_route_waypoint(game: Node, origin: Vector3, destination: Vector3, c
 	for rid in extra_exclude:
 		exclude.append(rid)
 
-	var flat_dist := Vector2(destination.x - origin.x, destination.z - origin.z).length()
-	if roads == null or roads.nodes.is_empty():
-		return {"waypoint": destination, "path": PackedVector3Array([destination]), "node_ids": PackedInt32Array(), "uses_astar": false}
-	if flat_dist <= 45.0 and _corridor_clear(space, origin, destination, corridor_half_w, exclude, mask):
-		return {"waypoint": destination, "path": PackedVector3Array([destination]), "node_ids": PackedInt32Array(), "uses_astar": false}
+	var resolved := _resolve_destination(game, destination, mode)
+	var eff_dest: Vector3 = resolved.get("position", destination)
+	var rerouted_out := bool(resolved.get("rerouted_outside", false))
 
-	var res := roads.astar_path(origin, destination, _blocked_edges, space, exclude)
+	var flat_dist := Vector2(eff_dest.x - origin.x, eff_dest.z - origin.z).length()
+	if roads == null or roads.nodes.is_empty():
+		return {"waypoint": eff_dest, "path": PackedVector3Array([eff_dest]), "node_ids": PackedInt32Array(), "start_idx": 0, "uses_astar": false, "effective_dest": eff_dest, "rerouted_outside": rerouted_out}
+
+	var start_zone := roads.find_containing_zone(origin, true)
+	var goal_zone := roads.find_containing_zone(eff_dest, true)
+	var same_zone := start_zone.is_empty() and goal_zone.is_empty()
+	if not start_zone.is_empty() and str(start_zone.get("id", "")) == str(goal_zone.get("id", "")):
+		same_zone = true
+	if same_zone and flat_dist <= 45.0 and _corridor_clear(space, origin, eff_dest, corridor_half_w, exclude, 1):
+		return {"waypoint": eff_dest, "path": PackedVector3Array([eff_dest]), "node_ids": PackedInt32Array(), "start_idx": 0, "uses_astar": false, "effective_dest": eff_dest, "rerouted_outside": rerouted_out}
+
+	var res := roads.astar_path(origin, eff_dest, _blocked_edges, space, exclude, mode, corridor_half_w)
 	var pts: PackedVector3Array = res.points
 	var nids: PackedInt32Array = res.node_ids
 	if pts.is_empty():
-		return {"waypoint": destination, "path": PackedVector3Array([destination]), "node_ids": PackedInt32Array(), "uses_astar": false}
+		return {"waypoint": eff_dest, "path": PackedVector3Array([eff_dest]), "node_ids": PackedInt32Array(), "start_idx": 0, "uses_astar": false, "effective_dest": eff_dest, "rerouted_outside": rerouted_out}
+
 	var start_idx := 0
-	if pts.size() >= 2 and Vector2(pts[0].x - origin.x, pts[0].z - origin.z).length() < 8.0:
+	var close_skip := 7.5 if mode == "drive" else 2.8
+	if pts.size() >= 2 and Vector2(pts[0].x - origin.x, pts[0].z - origin.z).length() < close_skip and _corridor_clear(space, origin, pts[1], corridor_half_w, exclude, 1):
 		start_idx = 1
-	elif pts.size() >= 2 and _corridor_clear(space, origin, pts[1], corridor_half_w, exclude, mask):
+	elif pts.size() >= 2 and _corridor_clear(space, origin, pts[1], corridor_half_w, exclude, 1):
 		var to_first := Vector2(pts[0].x - origin.x, pts[0].z - origin.z)
 		var to_second := Vector2(pts[1].x - origin.x, pts[1].z - origin.z)
 		if to_first.length() < 26.0 and to_first.dot(to_second) < 0.0:
 			start_idx = 1
-	return {"waypoint": pts[start_idx], "path": pts, "node_ids": nids, "start_idx": start_idx, "uses_astar": true}
+	return {"waypoint": pts[start_idx], "path": pts, "node_ids": nids, "start_idx": start_idx, "uses_astar": true, "effective_dest": eff_dest, "rerouted_outside": rerouted_out}
 
 
 func tick(game: Node, player: Player, camera: CameraRig, audio: A11ySpatialAudio, settings: A11ySettings, delta: float) -> void:
@@ -241,9 +265,11 @@ func tick(game: Node, player: Player, camera: CameraRig, audio: A11ySpatialAudio
 			_beacon_timer = clampf(dist / 26.0, 0.35, 1.25)
 			if not autowalk_active:
 				var beacon_excl: Array[RID] = []
+				var b_mode := "walk"
 				if active_veh and is_instance_valid(active_veh) and player.in_vehicle:
 					beacon_excl.append(active_veh.get_rid())
-				var route_info := compute_route_waypoint(game, origin, target_position, 0.45, 1, beacon_excl)
+					b_mode = "drive"
+				var route_info := compute_route_waypoint(game, origin, target_position, 0.45, 1, beacon_excl, b_mode)
 				current_waypoint = route_info.waypoint
 			if audio:
 				audio.play_beacon_ping(current_waypoint + Vector3.UP * 1.2, dist < 10.0)
@@ -251,26 +277,70 @@ func tick(game: Node, player: Player, camera: CameraRig, audio: A11ySpatialAudio
 		_tick_obstacles(player, camera, audio, delta)
 
 
-func _refresh_route(game: Node, origin: Vector3, corridor_w: float, mask: int, exclude: Array[RID], delta: float) -> void:
+func _dist_to_active_segment(origin: Vector3) -> float:
+	if _path_points.is_empty() or _path_idx < 0 or _path_idx >= _path_points.size():
+		return INF
+	var p_cur := Vector2(_path_points[_path_idx].x, _path_points[_path_idx].z)
+	var o2 := Vector2(origin.x, origin.z)
+	if _path_idx == 0:
+		return o2.distance_to(p_cur)
+	var p_prev := Vector2(_path_points[_path_idx - 1].x, _path_points[_path_idx - 1].z)
+	var seg := p_cur - p_prev
+	var seg_len_sq := seg.length_squared()
+	if seg_len_sq < 0.01:
+		return o2.distance_to(p_cur)
+	var t := clampf((o2 - p_prev).dot(seg) / seg_len_sq, 0.0, 1.0)
+	var closest := p_prev + seg * t
+	return o2.distance_to(closest)
+
+
+func _refresh_route(game: Node, origin: Vector3, space: PhysicsDirectSpaceState3D, corridor_w: float, exclude: Array[RID], delta: float) -> void:
 	_route_timer = maxf(_route_timer - delta, 0.0)
-	var dist_wp := INF
-	if _cached_waypoint != Vector3.ZERO:
-		dist_wp = Vector2(_cached_waypoint.x - origin.x, _cached_waypoint.z - origin.z).length()
-	var advance_dist := 6.5 if autopilot_mode == "drive" else 2.4
-	if _path_points.size() > 0 and _path_idx < _path_points.size() - 1 and dist_wp < advance_dist:
-		_path_idx += 1
-		_cached_waypoint = _path_points[_path_idx]
-		current_waypoint = _cached_waypoint
-		return
 	var dest_moved := _cached_dest.distance_to(target_position) > 3.0
-	if _route_timer <= 0.0 or _cached_waypoint == Vector3.ZERO or dest_moved:
-		var info := compute_route_waypoint(game, origin, target_position, corridor_w, mask, exclude)
+	var mode_changed := _route_mode != autopilot_mode
+
+	# Monotonic forward waypoint progression along the current path
+	if not _force_reroute and not dest_moved and not mode_changed and _path_points.size() > 0:
+		var advance_dist := 6.5 if autopilot_mode == "drive" else 2.2
+		while _path_idx < _path_points.size() - 1:
+			var wp := _path_points[_path_idx]
+			var nxt := _path_points[_path_idx + 1]
+			var dist_wp := Vector2(wp.x - origin.x, wp.z - origin.z).length()
+			var advance := dist_wp < advance_dist
+			if not advance:
+				var seg := Vector2(nxt.x - wp.x, nxt.z - wp.z)
+				if seg.length_squared() > 1.0:
+					var proj := Vector2(origin.x - wp.x, origin.z - wp.z).dot(seg.normalized())
+					var d_origin_nxt := Vector2(origin.x - nxt.x, origin.z - nxt.z).length()
+					var d_wp_nxt := seg.length()
+					if proj > 0.5 and d_origin_nxt < d_wp_nxt and _corridor_clear(space, origin, nxt, corridor_w, exclude, 1):
+						advance = true
+			if advance:
+				_path_idx += 1
+				_cached_waypoint = _path_points[_path_idx]
+				current_waypoint = _cached_waypoint
+				_best_wp_dist = INF
+				_no_progress_timer = 0.0
+			else:
+				break
+
+	var off_route_limit := 24.0 if autopilot_mode == "drive" else 14.0
+	var off_route := _path_points.is_empty() or _dist_to_active_segment(origin) > off_route_limit
+	var need_recompute := _force_reroute or _cached_waypoint == Vector3.ZERO or dest_moved or mode_changed or (_route_timer <= 0.0 and off_route)
+	if need_recompute:
+		var info := compute_route_waypoint(game, origin, target_position, corridor_w, 1, exclude, autopilot_mode)
 		_path_points = info.path
 		_path_node_ids = info.get("node_ids", PackedInt32Array())
 		_path_idx = int(info.get("start_idx", 0))
 		_cached_waypoint = info.waypoint
 		_cached_dest = target_position
-		_route_timer = 0.65 if autopilot_mode == "drive" else 0.5
+		_effective_dest = info.get("effective_dest", target_position)
+		_rerouted_outside = bool(info.get("rerouted_outside", false))
+		_route_mode = autopilot_mode
+		_force_reroute = false
+		_route_timer = 1.0
+		_best_wp_dist = INF
+		_no_progress_timer = 0.0
 	current_waypoint = _cached_waypoint
 
 
@@ -280,35 +350,73 @@ func _penalize_current_edge() -> void:
 		if node_idx > 0:
 			var key := RoadGraph.edge_key(_path_node_ids[node_idx - 1], _path_node_ids[node_idx])
 			_blocked_edges[key] = int(_blocked_edges.get(key, 0)) + 1
-		elif _path_node_ids.size() >= 2:
+		else:
 			var key0 := RoadGraph.edge_key(_path_node_ids[0], _path_node_ids[1])
 			_blocked_edges[key0] = int(_blocked_edges.get(key0, 0)) + 1
+	_force_reroute = true
 	_route_timer = 0.0
 	_cached_waypoint = Vector3.ZERO
 
 
-func _scan_whiskers(space: PhysicsDirectSpaceState3D, origin: Vector3, fwd: Vector3, reach: float, exclude: Array[RID], mask: int) -> Dictionary:
-	var out := {"center_hit": {}, "center_dist": reach, "left_score": reach, "right_score": reach}
+func _update_progress_tracker(origin: Vector3, wp: Vector3, delta: float, step_thresh: float, wp_improve: float) -> void:
+	if _progress_anchor == Vector3.ZERO or Vector2(origin.x - _progress_anchor.x, origin.z - _progress_anchor.z).length() > step_thresh:
+		_progress_anchor = origin
+		_stall_timer = 0.0
+	else:
+		_stall_timer += delta
+	var d_wp := Vector2(wp.x - origin.x, wp.z - origin.z).length()
+	if _best_wp_dist == INF or d_wp < _best_wp_dist - wp_improve:
+		_best_wp_dist = d_wp
+		_no_progress_timer = 0.0
+	else:
+		_no_progress_timer += delta
+
+
+func _scan_walk_fan(space: PhysicsDirectSpaceState3D, origin: Vector3, desired_dir: Vector3, reach: float, exclude: Array[RID], mask: int) -> Dictionary:
+	var out := {"steer_dir": desired_dir, "blocked_center": false, "center_dist": reach, "left_score": reach, "right_score": reach}
 	if space == null:
 		return out
-	var chest := origin + Vector3.UP * 0.85
-	var q_center := PhysicsRayQueryParameters3D.create(chest, chest + fwd * reach, mask, exclude)
-	var hit_c := space.intersect_ray(q_center)
-	if not hit_c.is_empty():
-		out["center_hit"] = hit_c
-		out["center_dist"] = origin.distance_to(hit_c.position)
+	var chest := origin + Vector3.UP * 0.9
+	var right := Vector3(-desired_dir.z, 0.0, desired_dir.x)
+	var center_min := reach
+	for off in [-0.40, 0.0, 0.40]:
+		var start := chest + right * float(off)
+		var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(start, start + desired_dir * reach, mask, exclude))
+		if not hit.is_empty():
+			center_min = minf(center_min, origin.distance_to(hit.position))
+	out["center_dist"] = center_min
+	out["blocked_center"] = center_min < 2.4
+
+	var angles := [0.0, 22.0, -22.0, 48.0, -48.0, 78.0, -78.0]
 	var left_sum := 0.0
 	var right_sum := 0.0
-	for deg in [28.0, 58.0, 86.0]:
+	var best_dir := desired_dir
+	var best_score := -INF
+	for deg in angles:
 		var rad := deg_to_rad(deg)
-		var dir_l := (Basis(Vector3.UP, rad) * fwd).normalized()
-		var dir_r := (Basis(Vector3.UP, -rad) * fwd).normalized()
-		var hl := space.intersect_ray(PhysicsRayQueryParameters3D.create(chest, chest + dir_l * reach, mask, exclude))
-		var hr := space.intersect_ray(PhysicsRayQueryParameters3D.create(chest, chest + dir_r * reach, mask, exclude))
-		left_sum += reach if hl.is_empty() else origin.distance_to(hl.position)
-		right_sum += reach if hr.is_empty() else origin.distance_to(hr.position)
+		var dir := (Basis(Vector3.UP, rad) * desired_dir).normalized()
+		var d_clear := reach
+		if absf(deg) < 1.0:
+			d_clear = center_min
+		else:
+			var h := space.intersect_ray(PhysicsRayQueryParameters3D.create(chest, chest + dir * reach, mask, exclude))
+			if not h.is_empty():
+				d_clear = origin.distance_to(h.position)
+		if deg > 0.0:
+			left_sum += d_clear
+		elif deg < 0.0:
+			right_sum += d_clear
+		var side_sign := 0.0 if absf(deg) < 1.0 else (-1.0 if deg > 0.0 else 1.0)
+		var consistency := 0.7 if (_avoid_hold_timer > 0.0 and _avoid_side != 0.0 and side_sign == _avoid_side) else 0.0
+		var score := minf(d_clear, reach) - absf(deg) * 0.028 + consistency
+		if d_clear < 1.45:
+			score -= 3.5
+		if score > best_score:
+			best_score = score
+			best_dir = dir
 	out["left_score"] = left_sum / 3.0
 	out["right_score"] = right_sum / 3.0
+	out["steer_dir"] = best_dir
 	return out
 
 
@@ -316,21 +424,14 @@ func _tick_autowalk(game: Node, player: Player, camera: CameraRig, delta: float)
 	if player.in_cover:
 		player.exit_cover()
 	var origin := player.global_position
-	var dist_total := Vector2(target_position.x - origin.x, target_position.z - origin.z).length()
-	if dist_total <= 2.2:
-		stop_autowalk(player, "Arrived at %s." % target_label)
-		return
-
 	var space: PhysicsDirectSpaceState3D = player.get_world_3d().direct_space_state if player.is_inside_tree() else null
 	var exclude: Array[RID] = [player.get_rid()]
-	_refresh_route(game, origin, 0.42, 1 | 4 | 8, exclude, delta)
-
-	# Progress tracking based on actual movement, never cancelling on temporary detours.
-	if _progress_anchor == Vector3.ZERO or Vector2(origin.x - _progress_anchor.x, origin.z - _progress_anchor.z).length() > 0.65:
-		_progress_anchor = origin
-		_stall_timer = 0.0
-	else:
-		_stall_timer += delta
+	var dist_total := Vector2(target_position.x - origin.x, target_position.z - origin.z).length()
+	if dist_total <= 2.2 and _corridor_clear(space, origin, target_position, 0.0, exclude, 1):
+		stop_autowalk(player, "Arrived at %s." % target_label)
+		return
+	_refresh_route(game, origin, space, 0.42, exclude, delta)
+	_update_progress_tracker(origin, current_waypoint, delta, 0.65, 0.9)
 
 	if _recovery_timer > 0.0:
 		_recovery_timer = maxf(_recovery_timer - delta, 0.0)
@@ -339,42 +440,31 @@ func _tick_autowalk(game: Node, player: Player, camera: CameraRig, delta: float)
 
 	var to_wp := Vector3(current_waypoint.x - origin.x, 0.0, current_waypoint.z - origin.z)
 	var desired_dir := to_wp.normalized() if to_wp.length_squared() > 0.01 else A11yRadar.forward_from_yaw(camera.yaw)
-	var whiskers := _scan_whiskers(space, origin, desired_dir, 3.6, exclude, 1 | 4 | 8)
-	var center_hit: Dictionary = whiskers["center_hit"]
-	var center_dist := float(whiskers["center_dist"])
-	var steer_dir := desired_dir
-	var move_vec := Vector2(0.0, -1.0)
+	var fan := _scan_walk_fan(space, origin, desired_dir, 3.8, exclude, 1 | 4 | 8)
+	var steer_dir: Vector3 = fan["steer_dir"]
+	var blocked_center := bool(fan["blocked_center"])
+	var center_dist := float(fan["center_dist"])
 
-	if not center_hit.is_empty() and center_dist < 2.6:
-		if _avoid_hold_timer <= 0.0 or _avoid_side == 0.0:
-			_avoid_side = -1.0 if float(whiskers["left_score"]) >= float(whiskers["right_score"]) else 1.0
-			_avoid_hold_timer = 1.25
-		var norm: Vector3 = center_hit.normal
-		norm.y = 0.0
-		if norm.length_squared() > 0.01:
-			norm = norm.normalized()
-			var tangent := Vector3(-norm.z, 0.0, norm.x) * _avoid_side
-			if tangent.dot(Basis(Vector3.UP, _avoid_side * 1.2) * desired_dir) < 0.0:
-				tangent = -tangent
-			steer_dir = (tangent * 0.92 + norm * 0.25).normalized()
-		else:
-			steer_dir = (Basis(Vector3.UP, -_avoid_side * 1.15) * desired_dir).normalized()
-	elif _avoid_hold_timer > 0.0 and _avoid_side != 0.0:
-		# Keep brief clearance margin past a wall corner before snapping back.
-		var side_check := _scan_whiskers(space, origin, desired_dir, 2.0, exclude, 1 | 4 | 8)
-		if float(side_check["center_dist"]) < 1.9:
-			steer_dir = (Basis(Vector3.UP, -_avoid_side * 0.85) * desired_dir).normalized()
+	if blocked_center:
+		var rel := desired_dir.signed_angle_to(steer_dir, Vector3.UP)
+		if absf(rel) > 0.15:
+			_avoid_side = -1.0 if rel > 0.0 else 1.0
+			_avoid_hold_timer = 0.85
 
-	if _stall_timer > 1.1:
+	if _stall_timer > 1.1 or _no_progress_timer > 4.2:
 		_stall_timer = 0.0
+		_no_progress_timer = 0.0
+		_best_wp_dist = INF
 		if player.tactical and player.try_mantle():
 			return
-		var side := -1.0 if float(whiskers["left_score"]) >= float(whiskers["right_score"]) else 1.0
+		var side := -1.0 if float(fan["left_score"]) >= float(fan["right_score"]) else 1.0
 		_avoid_side = side
-		_avoid_hold_timer = 1.6
-		_recovery_timer = 0.75
-		_recovery_move = Vector2(side * 0.92, 0.35 if center_dist < 1.2 else -0.45).normalized()
-		_penalize_current_edge()
+		_avoid_hold_timer = 1.2
+		_recovery_timer = 0.65
+		_recovery_move = Vector2(side * 0.9, 0.35 if center_dist < 1.2 else -0.45).normalized()
+		if _reroute_penalty_cd <= 0.0:
+			_reroute_penalty_cd = 1.2
+			_penalize_current_edge()
 		if _reroute_speech_cd <= 0.0:
 			_reroute_speech_cd = 5.0
 			A11yUIHelper.say("Rerouting around obstacle.", false, 1, &"a11y_turn_hint")
@@ -382,9 +472,16 @@ func _tick_autowalk(game: Node, player: Player, camera: CameraRig, delta: float)
 		return
 
 	var desired_yaw := atan2(-steer_dir.x, -steer_dir.z)
-	var turn_rate := 12.0 if (not center_hit.is_empty() and center_dist < 2.6) else 7.5
+	var turn_rate := 16.0 if blocked_center else 12.0
 	camera.yaw = lerp_angle(camera.yaw, desired_yaw, 1.0 - exp(-turn_rate * delta))
-	player.a11y_move_override = move_vec
+
+	var heading_err := absf(angle_difference(camera.yaw, desired_yaw))
+	var stride := -1.0
+	if heading_err > deg_to_rad(95.0):
+		stride = -0.25
+	elif heading_err > deg_to_rad(45.0):
+		stride = -0.55
+	player.a11y_move_override = Vector2(0.0, stride)
 
 	var turn_hint := A11yRadar.relative_bearing_text(origin, camera.yaw, current_waypoint)
 	if turn_hint != _last_turn_hint and turn_hint in ["to your left", "to your right", "behind left", "behind right"]:
@@ -500,8 +597,11 @@ func _handle_autodrive_recovery(space: PhysicsDirectSpaceState3D, origin: Vector
 			vehicle.a11y_drive_override = Vector2(_recovery_steer, _recovery_throttle)
 			return true
 
-	if (bumper_dist <= AUTODRIVE_EMERGENCY_DIST and vehicle.speed <= 4.0) or _stall_timer > 1.1:
+	var looping := _no_progress_timer > 5.5
+	if (bumper_dist <= AUTODRIVE_EMERGENCY_DIST and vehicle.speed <= 4.0) or _stall_timer > 1.1 or looping:
 		_stall_timer = 0.0
+		_no_progress_timer = 0.0
+		_best_wp_dist = INF
 		_avoid_hold_timer = 0.0
 		var clear_left := left_open >= right_open
 		if _reroute_penalty_cd <= 0.0:
@@ -527,22 +627,21 @@ func _handle_autodrive_recovery(space: PhysicsDirectSpaceState3D, origin: Vector
 
 func _tick_autodrive(game: Node, _player: Player, vehicle: Vehicle, delta: float) -> void:
 	var origin := vehicle.global_position
-	var dist_total := Vector2(target_position.x - origin.x, target_position.z - origin.z).length()
-	var arrive_radius := 4.4 if (target_label in ["Pay and Spray", "Drop Warehouse"]) else 7.5
+	var resolved := _resolve_destination(game, target_position, "drive")
+	var drive_dest: Vector3 = resolved.get("position", target_position)
+	var rerouted_out := bool(resolved.get("rerouted_outside", false))
+	var dist_total := Vector2(drive_dest.x - origin.x, drive_dest.z - origin.z).length()
+	var arrive_radius := 4.4 if (target_label in ["Pay and Spray", "Drop Warehouse"]) else (6.5 if rerouted_out else 7.5)
 	if dist_total <= arrive_radius:
 		vehicle.a11y_handbrake = true
-		stop_autowalk(_player, "Arrived at %s." % target_label, vehicle, true)
+		var msg := ("Arrived outside %s." % target_label) if rerouted_out else ("Arrived at %s." % target_label)
+		stop_autowalk(_player, msg, vehicle, true)
 		return
 
 	var space: PhysicsDirectSpaceState3D = vehicle.get_world_3d().direct_space_state if vehicle.is_inside_tree() else null
 	var exclude: Array[RID] = [vehicle.get_rid()]
-	_refresh_route(game, origin, 1.15, 1 | 4 | 8, exclude, delta)
-
-	if _progress_anchor == Vector3.ZERO or Vector2(origin.x - _progress_anchor.x, origin.z - _progress_anchor.z).length() > 1.1:
-		_progress_anchor = origin
-		_stall_timer = 0.0
-	else:
-		_stall_timer += delta
+	_refresh_route(game, origin, space, 1.05, exclude, delta)
+	_update_progress_tracker(origin, current_waypoint, delta, 1.1, 2.2)
 
 	var fwd := -vehicle.global_transform.basis.z
 	fwd.y = 0.0
@@ -568,7 +667,8 @@ func _tick_autodrive(game: Node, _player: Player, vehicle: Vehicle, delta: float
 	# Vehicle rotate_y(-steer * turn * sign(speed) * dt): positive signed angle = left = negative steer
 	var angle := fwd.signed_angle_to(desired_dir, Vector3.UP)
 	var steer := -clampf(angle / 0.42, -1.0, 1.0)
-	if bumper_dist <= AUTODRIVE_WALL_SLOW_DIST:
+	var obstacle_before_pad := bumper_dist + AUTODRIVE_BUMPER_OFFSET <= maxf(dist_total - arrive_radius * 0.5, 0.5)
+	if bumper_dist <= AUTODRIVE_WALL_SLOW_DIST and obstacle_before_pad:
 		if _avoid_hold_timer <= 0.0 or _avoid_side == 0.0:
 			_avoid_side = -1.0 if left_open >= right_open else 1.0
 			_avoid_hold_timer = 1.0
