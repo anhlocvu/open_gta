@@ -47,6 +47,12 @@ func report(crime: String, witnessed: bool) -> int:
 			add = 36.0
 		"steal_jet":
 			add = 44.0
+		"vandalism":
+			add = 14.0 if witnessed else 0.0
+		"vehicle_explosion":
+			add = 38.0
+		"destroy_cop":
+			add = 60.0
 		_:
 			add = 12.0 if witnessed else 0.0
 	if add <= 0.0:
@@ -134,6 +140,12 @@ func label() -> String:
 			return "ARMS THEFT"
 		"steal_jet":
 			return "AIRCRAFT THEFT"
+		"vandalism":
+			return "VEHICLE DAMAGE"
+		"vehicle_explosion":
+			return "VEHICLE EXPLOSION"
+		"destroy_cop":
+			return "DESTROYED POLICE UNIT"
 		_:
 			return ""
 

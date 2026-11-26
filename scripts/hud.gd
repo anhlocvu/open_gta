@@ -5,19 +5,20 @@ const ACTION_LABELS := {
 	"move_left": "Move Left", "move_right": "Move Right", "move_forward": "Move Forward", "move_back": "Move Back",
 	"jump": "Jump", "sprint": "Sprint", "crouch": "Crouch / Slide", "cover": "Take Cover",
 	"aim": "Aim ADS", "fire": "Fire / Punch Unarmed", "reload": "Reload", "interact": "Enter / Exit / Interact",
-	"swap_shoulder": "Swap Shoulder", "tactical_sprint": "Tactical Sprint", "melee": "Punch / Melee",
+	"swap_shoulder": "Swap Shoulder", "tactical_sprint": "Tactical Sprint", "melee": "Fire Gun / Punch Unarmed",
 	"return_menu": "Pause Menu", "camera_view": "Toggle Camera View", "graphics_profile": "Graphics Quality",
 	"weapon_holster": "Holster / Unarmed", "weapon_1": "Pistol / Buy Pistol", "weapon_2": "SMG / Buy SMG", "weapon_3": "Rifle / Buy Rifle", "weapon_4": "Shotgun / Buy Shotgun",
 	"cycle_weapon_up": "Next Weapon", "cycle_weapon_down": "Previous Weapon",
 	"a11y_turn_left": "Turn Left (Keyboard)", "a11y_turn_right": "Turn Right (Keyboard)",
 	"a11y_look_up": "Look Up (Keyboard)", "a11y_look_down": "Look Down (Keyboard)",
-	"a11y_center_pitch": "Center Pitch / Level Horizon", "a11y_aim_assist": "Snap Aim to Visible Enemy",
+	"a11y_center_pitch": "Center Pitch / Level Horizon", "a11y_aim_assist": "Face Locked Radar Target",
+	"a11y_snap_enemy": "Snap Aim to Visible Enemy",
 	"a11y_status": "Read Player Status", "a11y_objective": "Read Objective & Distance",
 	"a11y_compass": "Read Compass Heading", "a11y_radar_cycle": "Next Radar Filter",
 	"a11y_radar_cycle_prev": "Previous Radar Filter",
 	"a11y_radar_prev": "Previous Radar Target", "a11y_radar_next": "Next Radar Target",
 	"a11y_sonar_sweep": "360 Audio Sonar Sweep",
-	"a11y_beacon_toggle": "Toggle 3D Navigation Beacon", "a11y_autowalk": "Toggle Auto-Walk",
+	"a11y_beacon_toggle": "Toggle 3D Navigation Beacon", "a11y_autowalk": "Toggle Auto-Walk / Auto-Drive",
 	"a11y_history_prev": "Speech History Previous", "a11y_history_next": "Speech History Next",
 	"a11y_repeat_last": "Repeat Last Speech", "a11y_help": "Accessibility Controls Help"
 }
@@ -422,7 +423,7 @@ func _build() -> void:
 	A11yUIHelper.wire_button(_quit_btn, "Exit game")
 
 	var keys := _label(13, Color(0.78, 0.76, 0.68, 0.85))
-	keys.text = "WASD move · ; fire/punch · ' aim · -/= weapons · 0 fists · J/L turn · O snap aim · B/Shift+B radar · G sonar · Slash help"
+	keys.text = "WASD move · F / ; fire/punch · ' aim · -/= weapons · 0 fists · J/L turn · O face · Shift+O snap · B/Shift+B radar · G sonar · Slash help"
 	keys.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_menu_col.add_child(keys)
 

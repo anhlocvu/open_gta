@@ -58,6 +58,75 @@ func run() -> void:
 	game.player.locked = false
 	var shot: Dictionary = game.player.spend_shot()
 	check(not shot.is_empty() and game.player.magazines[Arsenal.Id.PISTOL] == ammo_before - 1, "weapon spends magazine ammunition")
+
+	# F key fires when armed (open air + facing vehicle at horizon pitch) and punches when unarmed
+	await physics_frame
+	game.player.global_position = Vector3(0.0, 0.25, 0.0)
+	game.player.force_update_transform()
+	game.player.velocity = Vector3.ZERO
+	game.player._fire_cd = 0.0
+	game.camera.yaw = 0.0
+	game.camera.pitch = 0.45
+	game.player.rotation.y = 0.0
+	for _i in 4:
+		await physics_frame
+		await process_frame
+	var mag_before_f: int = game.player.magazines[Arsenal.Id.PISTOL]
+	var f_press := InputEventKey.new()
+	f_press.keycode = KEY_F
+	f_press.physical_keycode = KEY_F
+	f_press.pressed = true
+	game._unhandled_input(f_press)
+	check(game.player.magazines[Arsenal.Id.PISTOL] == mag_before_f - 1, "F key fires gun in open air and decrements magazine")
+	var f_release := InputEventKey.new()
+	f_release.keycode = KEY_F
+	f_release.physical_keycode = KEY_F
+	f_release.pressed = false
+	game._unhandled_input(f_release)
+
+	var target_car := Vehicle.new()
+	target_car.kind = Vehicle.Kind.PARKED
+	game.add_child(target_car)
+	target_car.setup(Vehicle.Kind.PARKED, game.player.global_position + Vector3(0.0, 0.1, -7.0), 0.0)
+	game.player._fire_cd = 0.0
+	game.camera.yaw = 0.0
+	game.camera.pitch = -0.04
+	game.player.rotation.y = 0.0
+	for _i in 4:
+		await physics_frame
+		await process_frame
+	target_car.global_position = Vector3(game.player.global_position.x, 0.25, game.player.global_position.z - 7.0)
+	target_car.force_update_transform()
+	for _i in 3:
+		await physics_frame
+		await process_frame
+	var hp_before_f := target_car.hp
+	game._unhandled_input(f_press)
+	game._unhandled_input(f_release)
+	check(target_car.hp < hp_before_f, "F key gunfire hits and damages facing vehicle at horizon pitch")
+
+	game.player.give_weapon(Arsenal.Id.RIFLE, 10)
+	game.player._fire_cd = 0.0
+	var rifle_mag_before: int = game.player.magazines[Arsenal.Id.RIFLE]
+	game._unhandled_input(f_press)
+	for _i in 18:
+		await physics_frame
+		await process_frame
+	game._unhandled_input(f_release)
+	check(game.player.magazines[Arsenal.Id.RIFLE] <= rifle_mag_before - 2, "Holding F fires full-auto rifle across frames until released")
+
+	target_car.repair()
+	game.player.select_weapon(Arsenal.Id.NONE)
+	game.player.global_position = target_car.global_position + Vector3(0.0, 0.1, 2.4)
+	game.player.force_update_transform()
+	await physics_frame
+	await process_frame
+	game.player._punch_cd = 0.0
+	var hp_before_punch := target_car.hp
+	game._unhandled_input(f_press)
+	game._unhandled_input(f_release)
+	check(target_car.hp < hp_before_punch, "F key punches nearby vehicle when unarmed")
+	target_car.queue_free()
 	game._set_down(game.Phase.WASTED, "WASTED")
 	game._respawn()
 	check(game.phase == game.Phase.DELIVER, "respawn after theft preserves unfinished delivery")

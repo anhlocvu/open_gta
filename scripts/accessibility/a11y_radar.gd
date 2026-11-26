@@ -113,7 +113,7 @@ func resolve_locked_target(game: Node, origin: Vector3) -> Dictionary:
 		var dest: Vector3 = game.radar_objective() if game.has_method("radar_objective") else Vector3.ZERO
 		if dest == Vector3.ZERO:
 			return {}
-		return {"id": locked_target_id, "label": "Current Mission Objective", "category": Category.OBJECTIVES, "position": dest, "distance": origin.distance_to(dest), "node": null}
+		return {"id": locked_target_id, "label": "Current Mission Objective", "category": Category.OBJECTIVES, "position": dest, "distance": origin.distance_to(dest), "node": null, "aim_height": 1.2}
 	if locked_target_id.begins_with("place:"):
 		var city = game.get("city")
 		if city == null:
@@ -130,7 +130,7 @@ func resolve_locked_target(game: Node, origin: Vector3) -> Dictionary:
 		if map.has(locked_target_id):
 			var info: Array = map[locked_target_id]
 			var pos: Vector3 = info[1]
-			return {"id": locked_target_id, "label": info[0], "category": Category.PLACES, "position": pos, "distance": origin.distance_to(pos), "node": null}
+			return {"id": locked_target_id, "label": info[0], "category": Category.PLACES, "position": pos, "distance": origin.distance_to(pos), "node": null, "aim_height": 1.2}
 		return {}
 	var sep := locked_target_id.find(":")
 	if sep > 0:
@@ -144,17 +144,32 @@ func resolve_locked_target(game: Node, origin: Vector3) -> Dictionary:
 					return {}
 				if prefix in ["cop", "civ"] and bool(n.get("downed")):
 					return {}
-				if prefix in ["copcar", "veh", "jet"] and (bool(n.get("occupied")) or bool(n.get("wrecked"))):
+				if prefix in ["copcar", "veh", "jet"] and (bool(n.get("occupied")) or bool(n.get("exploded")) or bool(n.get("wrecked"))):
 					return {}
 				var label := "Target"
+				var aim_height := 1.1
+				var hp_val := -1.0
 				match prefix:
-					"cop": label = "Base Officer"
-					"copcar": label = "Police Unit"
-					"civ": label = "Civilian Pedestrian"
-					"veh", "jet": label = str(n.get("display_name")) if n.get("display_name") != null else "Vehicle"
+					"cop":
+						label = "Base Officer"
+					"copcar":
+						label = "Police Unit"
+						aim_height = 0.72
+						hp_val = float(n.get("hp")) if n.get("hp") != null else -1.0
+					"civ":
+						label = "Civilian Pedestrian"
+					"veh":
+						label = str(n.get("display_name")) if n.get("display_name") != null else "Vehicle"
+						aim_height = 0.72
+						hp_val = float(n.get("hp")) if n.get("hp") != null else -1.0
+					"jet":
+						label = str(n.get("display_name")) if n.get("display_name") != null else "Aircraft"
+						aim_height = 1.15
+						hp_val = float(n.get("hp")) if n.get("hp") != null else -1.0
 					"ow_pk":
 						label = _pickup_label(n)
-				return {"id": locked_target_id, "label": label, "category": Category.ALL, "position": n.global_position, "distance": origin.distance_to(n.global_position), "node": n}
+						aim_height = 0.55
+				return {"id": locked_target_id, "label": label, "category": Category.ALL, "position": n.global_position, "distance": origin.distance_to(n.global_position), "node": n, "aim_height": aim_height, "hp": hp_val}
 	return {}
 
 

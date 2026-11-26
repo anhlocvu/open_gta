@@ -265,6 +265,161 @@ func run() -> void:
 			var lock_clear := a11y.aim_assist.snap_to_visible_enemy(ow, ow.player, ow.camera, s)
 			check(lock_clear.get("locked", false), "LOS Aim Assist locks visible officer in Open World")
 
+	# 4. Auto-Drive (P inside Vehicle) & manual cancellation
+	if ow.coupe and is_instance_valid(ow.coupe):
+		ow.player.global_position = ow.coupe.global_position + Vector3(2.0, 0.0, 0.0)
+		ow._enter_vehicle(ow.coupe)
+		await frames(24)
+		a11y.radar.locked_target_id = "place:garage"
+		a11y.nav.target_position = ow.city.garage_pos
+		a11y.nav.target_label = "Drop Warehouse"
+		var start_drive_pos: Vector3 = ow.coupe.global_position
+		var p_ev := InputEventKey.new()
+		p_ev.physical_keycode = KEY_P
+		p_ev.keycode = KEY_P
+		p_ev.pressed = true
+		a11y.handle_input(p_ev)
+		check(a11y.nav.autowalk_active and a11y.nav.autopilot_mode == "drive", "Pressing P inside Vehicle activates Auto-Drive")
+		await frames(30)
+		check(ow.coupe.global_position.distance_to(start_drive_pos) > 1.0, "Auto-Drive physically drives the Vehicle")
+		Input.action_press("move_forward")
+		await frames(2)
+		Input.action_release("move_forward")
+		await frames(1)
+		check(not a11y.nav.autowalk_active and ow.coupe.a11y_drive_override == Vector2.ZERO, "Manual driving input cancels Auto-Drive")
+		ow.coupe.speed = 0.0
+		ow._exit_vehicle()
+		await frames(2)
+
+	# 5. Resilient Auto-Walk around a blocking wall (never aborts early with Path blocked)
+	var test_origin := Vector3(ow.city.ave_xs[5], 0.15, ow.city.st_zs[7])
+	var test_dest := test_origin + Vector3(0.0, 0.0, -22.0)
+	ow.player.global_position = test_origin
+	ow.player.velocity = Vector3.ZERO
+	var blocker := StaticBody3D.new()
+	blocker.collision_layer = 1
+	var bcol := CollisionShape3D.new()
+	var bshape := BoxShape3D.new()
+	bshape.size = Vector3(12.0, 4.0, 1.2)
+	bcol.shape = bshape
+	blocker.add_child(bcol)
+	blocker.position = test_origin + Vector3(0.0, 2.0, -8.0)
+	ow.add_child(blocker)
+	await frames(2)
+	a11y.radar.locked_target_id = ""
+	a11y.nav.target_label = "Across Block"
+	a11y.nav.target_position = test_dest
+	a11y.nav.start_autowalk()
+	await frames(170)
+	var routed_ok: bool = a11y.nav.autowalk_active or ow.player.global_position.distance_to(test_dest) < 3.5
+	check(routed_ok and ow.player.global_position.distance_to(test_origin) > 4.0, "Auto-Walk routes around blocking wall without premature Path blocked stop")
+	a11y.nav.stop_autowalk(ow.player)
+	blocker.queue_free()
+	await frames(2)
+
+	# 6. Universal O key faces any locked Radar target (Places, Vehicles, Pickups)
+	ow.player.global_position = Vector3(ow.city.ave_xs[5], 0.15, ow.city.st_zs[7])
+	ow.camera.yaw = 0.0
+	a11y.radar.locked_target_id = "place:gun_shop"
+	var o_ev := InputEventKey.new()
+	o_ev.physical_keycode = KEY_O
+	o_ev.keycode = KEY_O
+	o_ev.pressed = true
+	a11y.handle_input(o_ev)
+	var want_place_yaw := A11yRadar.yaw_toward(ow.player.global_position, ow.city.gun_shop_pos)
+	check(absf(angle_difference(ow.camera.yaw, want_place_yaw)) < 0.18, "Pressing O faces locked Place target on Radar")
+
+	if ow.coupe and is_instance_valid(ow.coupe) and not ow.coupe.wrecked:
+		a11y.radar.locked_target_id = "veh:%d" % ow.coupe.get_instance_id()
+		a11y.handle_input(o_ev)
+		var want_veh_yaw := A11yRadar.yaw_toward(ow.player.global_position, ow.coupe.global_position)
+		check(absf(angle_difference(ow.camera.yaw, want_veh_yaw)) < 0.18 and absf(angle_difference(ow.player.rotation.y, want_veh_yaw)) < 0.18, "Pressing O rotates camera and standing player toward locked Vehicle")
+
+	var live_loot := a11y.radar.collect_targets(ow, ow.player.global_position, A11yRadar.Category.LOOT)
+	if live_loot.size() > 0:
+		a11y.radar.locked_target_id = str(live_loot[0].id)
+		a11y.handle_input(o_ev)
+		var want_loot_yaw := A11yRadar.yaw_toward(ow.player.global_position, live_loot[0].position)
+		check(absf(angle_difference(ow.camera.yaw, want_loot_yaw)) < 0.18, "Pressing O faces locked Pickup target on Radar")
+
+	# 7. Auto-Drive wide-road top speed, 20m wall slowdown/avoidance, and zero crash damage
+	if ow.coupe and is_instance_valid(ow.coupe):
+		ow.coupe.repair()
+		ow.coupe.speed = 0.0
+		ow.coupe.velocity = Vector3.ZERO
+		ow.coupe.global_position = Vector3(ow.city.ave_xs[5], 0.35, ow.city.st_zs[10])
+		ow.coupe.rotation.y = 0.0
+		ow.coupe.force_update_transform()
+		ow._enter_vehicle(ow.coupe)
+		await frames(3)
+		a11y.radar.locked_target_id = ""
+		a11y.nav.target_label = "North Avenue"
+		a11y.nav.target_position = Vector3(ow.city.ave_xs[5], 0.15, ow.city.st_zs[2])
+		a11y.nav.start_autodrive()
+		var max_open_speed := 0.0
+		for _i in 95:
+			await physics_frame
+			await process_frame
+			max_open_speed = maxf(max_open_speed, ow.coupe.speed)
+		check(max_open_speed > 45.0, "Auto-Drive accelerates toward top speed on wide clear avenue")
+		var wall_pos: Vector3 = ow.coupe.global_position + Vector3(0.0, 2.5, -28.0)
+		var wall_blocker := StaticBody3D.new()
+		wall_blocker.collision_layer = 1
+		var wb_col := CollisionShape3D.new()
+		var wb_shape := BoxShape3D.new()
+		wb_shape.size = Vector3(14.0, 5.0, 2.0)
+		wb_col.shape = wb_shape
+		wall_blocker.add_child(wb_col)
+		wall_blocker.position = wall_pos
+		ow.add_child(wall_blocker)
+		await frames(1)
+		var min_avoid_speed: float = ow.coupe.speed
+		for _i in 150:
+			await physics_frame
+			await process_frame
+			min_avoid_speed = minf(min_avoid_speed, ow.coupe.speed)
+		check(min_avoid_speed < max_open_speed * 0.65, "Auto-Drive decelerates when detecting wall ahead within 20m")
+		check(ow.coupe.hp == 100.0 and not ow.coupe.burning and not ow.coupe.exploded, "Auto-Drive avoids wall without high-speed crash damage or explosion")
+		a11y.nav.stop_autowalk(ow.player, "", ow.coupe)
+		ow.coupe.speed = 0.0
+
+		# Boxed-in Auto-Drive (front + rear walls) does not reverse-slam
+		ow.coupe.repair()
+		ow.coupe.speed = 0.0
+		ow.coupe.global_position = Vector3(ow.city.ave_xs[5], 0.35, ow.city.st_zs[10])
+		ow.coupe.rotation.y = 0.0
+		ow.coupe.force_update_transform()
+		wall_blocker.position = ow.coupe.global_position + Vector3(0.0, 2.5, -5.2)
+		var rear_blocker := StaticBody3D.new()
+		rear_blocker.collision_layer = 1
+		var rb_col := CollisionShape3D.new()
+		var rb_shape := BoxShape3D.new()
+		rb_shape.size = Vector3(14.0, 5.0, 2.0)
+		rb_col.shape = rb_shape
+		rear_blocker.add_child(rb_col)
+		rear_blocker.position = ow.coupe.global_position + Vector3(0.0, 2.5, 5.0)
+		ow.add_child(rear_blocker)
+		await frames(2)
+		a11y.nav.target_position = ow.coupe.global_position + Vector3(0.0, 0.0, -40.0)
+		a11y.nav.start_autodrive()
+		await frames(60)
+		check(ow.coupe.hp == 100.0 and not ow.coupe.exploded, "Boxed-in Auto-Drive does not reverse-slam rear obstacle")
+		a11y.nav.stop_autowalk(ow.player, "", ow.coupe)
+		rear_blocker.queue_free()
+
+		# Arrival retains ABS handbrake until stopped
+		wall_blocker.queue_free()
+		ow.coupe.speed = 24.0
+		ow.coupe.global_position = Vector3(ow.city.ave_xs[5], 0.35, ow.city.st_zs[10])
+		a11y.nav.target_label = "Close Stop"
+		a11y.nav.target_position = ow.coupe.global_position + Vector3(0.0, 0.0, -5.0)
+		a11y.nav.start_autodrive()
+		await frames(25)
+		check(not a11y.nav.autowalk_active and absf(ow.coupe.speed) <= 3.0, "Auto-Drive arrival retains ABS handbrake until vehicle stops")
+
+		ow._exit_vehicle()
+		await frames(2)
+
 	ow.queue_free()
 	await process_frame
 	print("ACCESSIBILITY_SUITE: %d checks, %d failures" % [checks, failures])

@@ -66,6 +66,9 @@ var _wav_ocean: AudioStreamWAV
 var _wav_bar_groove: AudioStreamWAV
 var _wav_shop_chime: AudioStreamWAV
 var _wav_sonar: AudioStreamWAV
+var _wav_explosion: AudioStreamWAV
+var _wav_metal_hit: AudioStreamWAV
+var _wav_fire_alarm: AudioStreamWAV
 
 
 func _ready() -> void:
@@ -239,6 +242,18 @@ func play_vehicle_event(kind: StringName, pos: Vector3, intensity := 1.0) -> voi
 		&"crash": _play_3d(_wav_car_crash, pos, lerpf(-9.0, -1.5, clampf(intensity, 0.0, 1.0)), randf_range(0.9, 1.08), 11.0, "Vehicles")
 		&"horn": _play_3d(_wav_horn, pos, -7.0, randf_range(0.94, 1.06), 9.0, "Vehicles")
 		&"screech": _play_3d(_wav_tire_screech, pos, -9.0, randf_range(0.95, 1.08), 8.0, "Vehicles")
+
+
+func play_vehicle_hit(pos: Vector3, melee := false) -> void:
+	_play_3d(_wav_metal_hit, pos, -2.5 if melee else -6.0, randf_range(0.9, 1.12), 8.0, "SFX")
+
+
+func play_vehicle_fire(pos: Vector3) -> void:
+	_play_3d(_wav_fire_alarm, pos, -2.0, 1.0, 12.0, "SFX")
+
+
+func play_explosion(pos: Vector3) -> void:
+	_play_3d(_wav_explosion, pos, 2.0, randf_range(0.92, 1.05), 24.0, "SFX")
 
 
 func play_shop_cue() -> void:
@@ -545,6 +560,9 @@ func _build_streams() -> void:
 		_wav_cache["bar_groove"] = _make_bar_loop()
 		_wav_cache["shop_chime"] = _make_double_tone(0.20, 880.0, 1320.0)
 		_wav_cache["sonar"] = _make_tone_sweep(0.07, 940.0, 860.0, 0.5)
+		_wav_cache["explosion"] = _make_explosion()
+		_wav_cache["metal_hit"] = _make_metal_hit()
+		_wav_cache["fire_alarm"] = _make_tone_sweep(0.24, 520.0, 880.0, 0.55)
 	_wav_shot_player = _wav_cache["shot_player"]
 	_wav_shot_enemy = _wav_cache["shot_enemy"]
 	_wav_shot_ally = _wav_cache["shot_ally"]
@@ -580,6 +598,9 @@ func _build_streams() -> void:
 	_wav_bar_groove = _wav_cache["bar_groove"]
 	_wav_shop_chime = _wav_cache["shop_chime"]
 	_wav_sonar = _wav_cache["sonar"]
+	_wav_explosion = _wav_cache["explosion"]
+	_wav_metal_hit = _wav_cache["metal_hit"]
+	_wav_fire_alarm = _wav_cache["fire_alarm"]
 
 
 static func _make_shot(dur: float, thump_hz: float, amp: float) -> AudioStreamWAV:
@@ -592,6 +613,34 @@ static func _make_shot(dur: float, thump_hz: float, amp: float) -> AudioStreamWA
 		var noise := sin(float(i) * 19.7) * sin(float(i) * 0.63)
 		var punch := sin(t * TAU * thump_hz * exp(-t * 12.0))
 		samples[i] = clampf((noise * 0.65 + punch * 0.35) * env * amp, -1.0, 1.0)
+	return _pcm(samples)
+
+
+static func _make_metal_hit() -> AudioStreamWAV:
+	var count := int(RATE * 0.14)
+	var samples := PackedFloat32Array()
+	samples.resize(count)
+	for i in count:
+		var t := float(i) / float(RATE)
+		var env := exp(-t * 24.0)
+		var clang := sin(t * TAU * 320.0) * 0.45 + sin(t * TAU * 675.0) * 0.3
+		var thud := sin(t * TAU * 92.0 * exp(-t * 10.0)) * 0.5
+		samples[i] = clampf((clang + thud) * env * 0.8, -1.0, 1.0)
+	return _pcm(samples)
+
+
+static func _make_explosion() -> AudioStreamWAV:
+	var count := int(RATE * 0.85)
+	var samples := PackedFloat32Array()
+	samples.resize(count)
+	var lp := 0.0
+	for i in count:
+		var t := float(i) / float(RATE)
+		var env := exp(-t * 4.4)
+		var boom := sin(t * TAU * lerpf(82.0, 34.0, clampf(t / 0.45, 0.0, 1.0))) * 0.55
+		var raw_noise := sin(float(i) * 17.3) * sin(float(i) * 0.41) + cos(float(i) * 7.1) * 0.5
+		lp = lerpf(lp, raw_noise, 0.18)
+		samples[i] = clampf((boom + lp * 0.65) * env * 0.95, -1.0, 1.0)
 	return _pcm(samples)
 
 

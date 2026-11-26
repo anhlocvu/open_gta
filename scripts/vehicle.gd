@@ -27,6 +27,12 @@ var brake_rate := 48.0
 var coast := 8.0
 var turn_rate := 1.9
 var hp := 100.0
+var burning := false
+var burn_timer := 0.0
+var exploded := false
+var _damage_stage := 0
+var a11y_drive_override := Vector2.ZERO
+var a11y_handbrake := false
 var last_impact := 0.0
 var graph: RoadGraph
 var node_i := 0
@@ -124,9 +130,9 @@ func apply_time(night: bool) -> void:
 func _build_collision() -> void:
 	var col := CollisionShape3D.new()
 	var box := BoxShape3D.new()
-	box.size = Vector3(1.78, 1.05, 4.25)
+	box.size = Vector3(1.78, 1.48, 4.25)
 	col.shape = box
-	col.position.y = 0.52
+	col.position.y = 0.74
 	add_child(col)
 
 
@@ -218,37 +224,64 @@ func _physics_process(delta: float) -> void:
 
 	var throttle := 0.0
 	var steer := 0.0
+	if burning and not exploded:
+		burn_timer = maxf(burn_timer - delta, 0.0)
+		if burn_timer <= 0.0:
+			_explode()
+	var manual_handbrake := false
+	var auto_brake := false
 	if occupied:
 		var input := _player_input()
-		steer = input.x
-		throttle = -input.y
+		manual_handbrake = Input.is_action_pressed("jump") or Input.is_physical_key_pressed(KEY_SPACE)
+		var pads := get_tree().get_first_node_in_group("touch") as TouchControls
+		if pads and pads.handbrake:
+			manual_handbrake = true
+		if input.length_squared() > 0.001 or manual_handbrake:
+			a11y_handbrake = false
+			steer = input.x
+			throttle = -input.y
+		elif a11y_drive_override.length_squared() > 0.0001:
+			steer = clampf(a11y_drive_override.x, -1.0, 1.0)
+			throttle = clampf(a11y_drive_override.y, -1.0, 1.0)
+		elif a11y_handbrake and absf(speed) <= 0.25:
+			a11y_handbrake = false
+		auto_brake = a11y_handbrake and not manual_handbrake
 	elif ai_enabled:
+		a11y_handbrake = false
 		var ai := _ai_drive()
 		steer = ai.x
 		throttle = ai.y
+	else:
+		a11y_handbrake = false
 
 	var cap := ai_max_speed if (ai_enabled and not occupied) else max_speed
 	if fleeing and not occupied:
 		cap *= 1.12
 	if not occupied:
 		cap *= clampf(0.4 + hp / 160.0, 0.35, 1.0)
-	if wrecked:
-		cap *= 0.12
+	if wrecked or exploded:
+		cap = 0.0 if exploded else cap * 0.12
 		throttle = 0.0
-	var handbrake := false
-	if occupied:
-		handbrake = Input.is_action_pressed("jump") or Input.is_physical_key_pressed(KEY_SPACE)
-		var pads := get_tree().get_first_node_in_group("touch") as TouchControls
-		if pads and pads.handbrake:
-			handbrake = true
+		if exploded:
+			speed = 0.0
+	var handbrake := manual_handbrake or auto_brake
 	braking = throttle < -0.05 or handbrake
 	if throttle > 0.05 and not handbrake:
 		var push := accel - absf(speed) * 0.16
 		speed = move_toward(speed, cap * throttle, maxf(push, accel * 0.32) * delta)
-	elif throttle < -0.05:
-		speed = move_toward(speed, -cap * 0.38, brake_rate * delta)
+	elif throttle < -0.05 and not handbrake:
+		if a11y_drive_override.length_squared() > 0.0001 and speed > 1.5:
+			speed = move_toward(speed, 0.0, maxf(brake_rate * 2.8, absf(speed) * 6.5) * delta)
+		else:
+			var rev_cap := minf(cap * 0.22, 12.0) if a11y_drive_override.length_squared() > 0.0001 else cap * 0.38
+			speed = move_toward(speed, -rev_cap, brake_rate * delta)
 	else:
-		speed = move_toward(speed, 0.0, (brake_rate * 1.35 if handbrake else coast) * delta)
+		var stop_rate := brake_rate * 1.35
+		if auto_brake:
+			stop_rate = maxf(brake_rate * 2.8, absf(speed) * 6.5)
+		elif not handbrake:
+			stop_rate = coast
+		speed = move_toward(speed, 0.0, stop_rate * delta)
 
 	var speed_turn := clampf(1.55 - absf(speed) / 100.0, 0.4, 1.3)
 	var turn := (turn_rate * 1.5 if handbrake else turn_rate) * speed_turn
@@ -261,7 +294,7 @@ func _physics_process(delta: float) -> void:
 		forward = forward.normalized()
 	var right := global_transform.basis.x
 	right.y = 0.0
-	var slip := steer * speed * (0.18 if handbrake else 0.06)
+	var slip := steer * speed * (0.18 if manual_handbrake else (0.03 if auto_brake else 0.06))
 	velocity.x = forward.x * speed + right.x * slip
 	velocity.z = forward.z * speed + right.z * slip
 	var before := speed
@@ -418,14 +451,100 @@ func eject_driver() -> Pedestrian:
 
 
 func apply_damage(amount: float) -> void:
+	if exploded or amount <= 0.0:
+		return
 	hp = clampf(hp - amount, 0.0, 100.0)
 	if hp <= 0.0:
 		wrecked = true
+		if not burning:
+			_start_burning()
+		elif amount >= 25.0:
+			burn_timer = minf(burn_timer, 0.15)
+	elif hp <= 25.0 and _damage_stage < 2:
+		_damage_stage = 2
+		_notify_damage_stage(2)
+	elif hp <= 50.0 and _damage_stage < 1:
+		_damage_stage = 1
+		_notify_damage_stage(1)
+
+
+func _start_burning() -> void:
+	burning = true
+	burn_timer = 1.8
+	a11y_drive_override = Vector2.ZERO
+	if is_inside_tree():
+		var game := get_tree().current_scene
+		if game and game.has_method("on_vehicle_burning"):
+			game.on_vehicle_burning(self)
+
+
+func _explode() -> void:
+	if exploded:
+		return
+	exploded = true
+	burning = false
+	wrecked = true
+	ai_enabled = false
+	a11y_drive_override = Vector2.ZERO
+	a11y_handbrake = false
+	speed = 0.0
+	velocity = Vector3.ZERO
+	_char_vehicle_visuals()
+	if is_inside_tree():
+		var game := get_tree().current_scene
+		if game and game.has_method("on_vehicle_exploded"):
+			game.on_vehicle_exploded(self)
+		else:
+			occupied = false
+			_apply_explosion_aoe(get_tree(), global_position)
+	else:
+		occupied = false
+
+
+func _apply_explosion_aoe(tree: SceneTree, blast_pos: Vector3) -> void:
+	for node in tree.get_nodes_in_group("peds"):
+		var ped := node as Pedestrian
+		if ped and is_instance_valid(ped) and not ped.downed and blast_pos.distance_to(ped.global_position) <= 9.5:
+			ped.knock_down()
+	for node in tree.get_nodes_in_group("vehicles"):
+		var other := node as Vehicle
+		if other == null or other == self or not is_instance_valid(other) or other.exploded:
+			continue
+		var d := blast_pos.distance_to(other.global_position)
+		if d <= 8.5:
+			other.apply_damage(lerpf(80.0, 30.0, d / 8.5))
+
+
+func _char_vehicle_visuals() -> void:
+	for node in find_children("*", "MeshInstance3D", true, false):
+		var mi := node as MeshInstance3D
+		if mi:
+			mi.material_override = Palette.mat(Color("1a1818"), 0.15, 0.92)
+	if _head_l:
+		_head_l.visible = false
+	if _head_r:
+		_head_r.visible = false
+	if _light_a:
+		_light_a.light_energy = 0.0
+	if _light_b:
+		_light_b.light_energy = 0.0
+
+
+func _notify_damage_stage(stage: int) -> void:
+	if not is_inside_tree():
+		return
+	var game := get_tree().current_scene
+	if game and game.has_method("on_vehicle_damage_stage"):
+		game.on_vehicle_damage_stage(self, stage)
 
 
 func repair() -> void:
 	hp = 100.0
 	wrecked = false
+	burning = false
+	burn_timer = 0.0
+	exploded = false
+	_damage_stage = 0
 
 
 func _emit_vehicle_audio(kind_name: StringName, intensity := 1.0) -> void:

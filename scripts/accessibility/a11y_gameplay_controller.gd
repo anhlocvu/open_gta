@@ -120,12 +120,24 @@ func handle_input(event: InputEvent) -> bool:
 	if A11yUIHelper.action_pressed(event, &"a11y_autowalk"):
 		_toggle_autowalk(player)
 		return true
-	if A11yUIHelper.action_pressed(event, &"a11y_aim_assist"):
-		var res := aim_assist.snap_to_visible_enemy(game, player, camera, settings)
-		if res.get("locked", false):
-			A11yUIHelper.say("Aimed at %s, %d meters" % [res.label, res.distance], true, 3, &"a11y_aim", true)
-		elif str(res.get("reason", "")) != "":
-			A11yUIHelper.say(str(res.reason), true, 2, &"a11y_aim", true)
+	if A11yUIHelper.action_pressed(event, &"a11y_snap_enemy", true):
+		var snap_res := aim_assist.snap_to_visible_enemy(game, player, camera, settings)
+		if snap_res.get("locked", false):
+			A11yUIHelper.say("Aimed at %s, %d meters" % [snap_res.label, snap_res.distance], true, 3, &"a11y_aim", true)
+		elif str(snap_res.get("reason", "")) != "":
+			A11yUIHelper.say(str(snap_res.reason), true, 2, &"a11y_aim", true)
+		return true
+	if A11yUIHelper.action_pressed(event, &"a11y_aim_assist", true):
+		var face_res := aim_assist.face_radar_target(game, player, camera, radar)
+		if face_res.get("locked", false):
+			var los_txt := "clear" if bool(face_res.get("clear", true)) else "behind cover"
+			var msg := "Facing %s, %d meters, %s" % [face_res.label, face_res.distance, los_txt]
+			var hp_pct := float(face_res.get("hp", -1.0))
+			if hp_pct >= 0.0:
+				msg += ", %d percent durability" % int(round(hp_pct))
+			A11yUIHelper.say(msg, true, 3, &"a11y_aim", true)
+		elif str(face_res.get("reason", "")) != "":
+			A11yUIHelper.say(str(face_res.reason), true, 2, &"a11y_aim", true)
 		return true
 	return false
 
@@ -314,36 +326,57 @@ func _step_radar(player: Player, camera: CameraRig, step_dir: int) -> void:
 func _toggle_beacon(player: Player, camera: CameraRig) -> void:
 	nav.beacon_active = not nav.beacon_active
 	if nav.beacon_active:
+		nav.track_objective = radar.locked_target_id == ""
 		_refresh_nav_target(player)
 		var origin := _tracked_pos(player)
 		if nav.target_position == Vector3.ZERO:
 			nav.beacon_active = false
+			nav.track_objective = false
 			A11yUIHelper.say("No target available for beacon.", true, 2, &"a11y_nav", true)
 			return
 		var dist := int(round(origin.distance_to(nav.target_position)))
 		var dir := A11yRadar.relative_bearing_text(origin, camera.yaw, nav.target_position)
 		A11yUIHelper.say("Beacon on for %s, %d meters, %s." % [nav.target_label, dist, dir], true, 2, &"a11y_nav", true)
 	else:
+		if not nav.autowalk_active:
+			nav.track_objective = false
 		A11yUIHelper.say("Navigation beacon off.", true, 2, &"a11y_nav", true)
 
 
 func _toggle_autowalk(player: Player) -> void:
 	if nav.autowalk_active:
-		nav.stop_autowalk(player, "Auto-walk stopped.")
+		var stop_msg := "Auto-drive stopped." if nav.autopilot_mode == "drive" else "Auto-walk stopped."
+		nav.stop_autowalk(player, stop_msg)
 		return
-	if player.in_vehicle:
-		A11yUIHelper.say("Auto-walk is only available on foot.", true, 2, &"a11y_nav", true)
+	var active_air := game.get("active_aircraft") as Aircraft if game else null
+	if active_air != null:
+		A11yUIHelper.say("Auto-pilot is not available in aircraft.", true, 2, &"a11y_nav", true)
 		return
+	var active_veh := game.get("active_vehicle") as Vehicle if game else null
+	var drive_mode := player.in_vehicle and active_veh != null and is_instance_valid(active_veh)
+	if player.in_vehicle and not drive_mode:
+		A11yUIHelper.say("Auto-drive unavailable.", true, 2, &"a11y_nav", true)
+		return
+	if drive_mode and (active_veh.burning or active_veh.exploded):
+		A11yUIHelper.say("Vehicle is burning, get out!", true, 3, &"a11y_nav", true)
+		return
+	nav.track_objective = radar.locked_target_id == ""
 	_refresh_nav_target(player)
 	if nav.target_position == Vector3.ZERO:
+		nav.track_objective = false
 		A11yUIHelper.say("Select a radar target or objective first.", true, 2, &"a11y_nav", true)
 		return
-	nav.start_autowalk()
-	A11yUIHelper.say("Auto-walk started toward %s. Press any movement key or P to stop." % nav.target_label, true, 3, &"a11y_nav", true)
+	if drive_mode:
+		nav.start_autodrive()
+		A11yUIHelper.say("Auto-drive started toward %s. Press any driving key or P to stop." % nav.target_label, true, 3, &"a11y_nav", true)
+	else:
+		nav.start_autowalk("walk")
+		A11yUIHelper.say("Auto-walk started toward %s. Press any movement key or P to stop." % nav.target_label, true, 3, &"a11y_nav", true)
 
 
 func _refresh_nav_target(player: Player) -> void:
 	if radar.locked_target_id != "":
+		nav.track_objective = false
 		var locked := radar.resolve_locked_target(game, _tracked_pos(player))
 		if not locked.is_empty():
 			nav.target_label = str(locked.label)
@@ -351,14 +384,17 @@ func _refresh_nav_target(player: Player) -> void:
 			return
 		radar.locked_target_id = ""
 		if nav.autowalk_active:
-			nav.stop_autowalk(player, "Tracked target lost. Auto-walk stopped.")
+			nav.stop_autowalk(player, "Tracked target lost. Auto-pilot stopped.")
 		elif nav.beacon_active:
 			A11yUIHelper.say("Tracked target lost. Switching beacon to objective.", false, 1, &"a11y_nav")
+		nav.track_objective = true
+	if not nav.track_objective and nav.target_position != Vector3.ZERO:
+		return
 	var info := _default_objective()
 	nav.target_label = str(info.label)
 	nav.target_position = info.position
 	if info.position == Vector3.ZERO and nav.autowalk_active:
-		nav.stop_autowalk(player, "Objective unavailable. Auto-walk stopped.")
+		nav.stop_autowalk(player, "Objective unavailable. Auto-pilot stopped.")
 
 
 func _default_objective() -> Dictionary:
@@ -385,7 +421,7 @@ func _is_gameplay_active() -> bool:
 
 
 func _speak_context_help() -> void:
-	var msg := "Open world accessibility keys: W A S D move or drive. J and L turn, I and K look up and down, U levels horizon, O snaps aim. Semicolon or Left click fires gun or punches when unarmed. Apostrophe or Right click aims. Minus and Equal cycle weapons, 0 holsters to fists, 1 to 3 and 5 select or buy guns, R reloads, F punches, E interacts. Z status, X objective, H compass, G sonar sweep. B next radar filter, Shift B previous filter, Comma and Period cycle targets, M beacon, P auto-walk. Tab or Escape pauses."
+	var msg := "Open world accessibility keys: W A S D move or drive. J and L turn, I and K look up and down, U levels horizon, O faces locked radar target, Shift O snaps aim to enemy. F, Semicolon, or Left click fires gun or punches when unarmed. Apostrophe or Right click aims. Minus and Equal cycle weapons, 0 holsters to fists, 1 to 3 and 5 select or buy guns, R reloads, E interacts. Z status, X objective, H compass, G sonar sweep. B next radar filter, Shift B previous filter, Comma and Period cycle targets, M beacon, P auto-walk or auto-drive. Tab or Escape pauses."
 	A11yUIHelper.say(msg, true, 3, &"a11y_help", true)
 
 

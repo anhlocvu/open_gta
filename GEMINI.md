@@ -1,4 +1,4 @@
-##rules
+﻿##rules
 
 bắt buộc luôn luôn kích hoạt các skill godot master và các skill về godot, các skill về trợ năng và audio game, để người dùng ra ý tưởng không cần phải yêu cầu kích hoạt
 # Project Development Log (`GEMINI.md`)
@@ -54,7 +54,6 @@ Implemented a complete NVDA-only accessibility architecture and translated all u
 - `tests/test_game_integration.gd`: 14 checks, 0 failures
 - Total verified post-edit: **149 checks, 0 failures**.
 - **Windows Release Export**:
-  - Added `[dependencies]` (`nvdaControllerClient64.dll`) to `nvda.gdextension` and `[preset.1]` (`Windows Desktop`, `x86_64`) to `export_presets.cfg`.
   - Exported `export/windows/OperationChaos.exe` (`109,149,184` bytes), `export/windows/OperationChaos.pck` (`115,540,036` bytes), `export/windows/libgdnvda.windows.template_release.x86_64.dll` (`559,104` bytes), and `export/windows/nvdaControllerClient64.dll` (`265,632` bytes).
   - Verified `OperationChaos.exe --headless --quit-after 5` exits cleanly (`exit code 0`) with zero errors.
 - Note: Interactive gameplay with live Windows `NVDA.exe` speech output and real audio hardware listening remains to be manually verified by the user.
@@ -193,3 +192,68 @@ Fixed explicit Save/Load persistence and `CONTINUE GAME` visibility, added immed
   - Exported `export/windows/OperationChaos.exe` (`109,149,184` bytes), `export/windows/OperationChaos.pck` (`114,835,916` bytes), `export/windows/libgdnvda.windows.template_release.x86_64.dll` (`559,104` bytes), and `export/windows/nvdaControllerClient64.dll` (`265,632` bytes).
   - Verified `OperationChaos.exe --headless --quit-after 5` exits cleanly (`exit code 0`).
 - Note: Interactive gameplay with live Windows `NVDA.exe` speech output and real audio hardware listening remains to be manually verified by the user.
+
+
+## Session: 2026-11-26 — Unified Auto-Drive (`P`), Resilient A* Rerouting, Universal Radar Face (`O`) & Vehicle Destruction
+
+### Summary
+Implemented unified Auto-Walk / Auto-Drive (`P`), upgraded obstacle-aware A* pathfinding and active stall recovery for both walking and driving, repurposed `O` to face any locked `A11yRadar` target across all categories (preserving `Shift+O` for quick visible enemy snap), and added melee/gunfire vehicle destruction with burning countdowns and AoE explosions, governed by SpecKit (`specs/005-autopilot-radar-vehicle-destruction/`) and ECC (`tdd-guide` + `gdscript-reviewer`).
+
+### Key Changes
+- **Weighted A* & Unobstructed Node Selection (`scripts/road_graph.gd`)**:
+  - Added `edge_key()`, `nearest_clear()` (prefers closest intersection node with unobstructed static-wall LOS), and `astar_path()` (weighted XZ `g + h` A* supporting blocked-edge penalties for detour routing).
+- **Resilient Auto-Walk & Auto-Drive (`scripts/accessibility/a11y_navigation.gd`, `scripts/accessibility/a11y_gameplay_controller.gd`, `scripts/vehicle.gd`)**:
+  - Extended `P` (`a11y_autowalk`) to start `Auto-Drive` when driving a `Vehicle` (excluding `Aircraft`), steering and throttling along `RoadGraph` A* waypoints via `Vehicle.a11y_drive_override` / `Vehicle.a11y_handbrake`, slowing for sharp corners, braking on arrival, and cancelling immediately on manual driving input or `P`.
+  - Replaced single-ray shortcuts and premature straight-line `dist_total` stall aborts with 3-ray `_corridor_clear()` checks, 7-ray `_scan_whiskers()` wall/vehicle tangent steering, `track_objective` state separation (preventing `_refresh_nav_target()` from wiping custom destinations during `Phase.HEAT`), and active recovery maneuvers (lateral sidestep/reroute on foot; reverse-and-countersteer reroute in vehicles).
+- **Universal Radar Target Facing `O` & Quick Snap `Shift+O` (`scripts/accessibility/a11y_aim_assist.gd`, `scripts/accessibility/a11y_radar.gd`, `scripts/combat_input.gd`, `scripts/hud.gd`)**:
+  - Extended `A11yRadar.resolve_locked_target()` with per-target `aim_height` and vehicle `hp`.
+  - Added `A11yAimAssist.face_radar_target()` on `O` (`a11y_aim_assist`, exact modifiers) to orient `camera.yaw`/`camera.pitch` (and standing `player.rotation.y` when not in cover or vehicle) toward any locked Radar target (officers, civilians, vehicles, aircraft, pickups, places, objective), announcing distance, clear/blocked LOS, and vehicle durability %.
+  - Bound `Shift+O` to `a11y_snap_enemy` (`snap_to_visible_enemy()`).
+- **Vehicle Melee Damage, Burning Countdown & Explosions (`scripts/player.gd`, `scripts/vehicle.gd`, `scripts/game.gd`, `scripts/wanted_system.gd`, `scripts/shot_effects.gd`, `scripts/accessibility/a11y_spatial_audio.gd`)**:
+  - Added `Player.try_punch_vehicle()` (`~2.8m` forward ray + proximity reach, `14.0` damage per punch) wired into `Game._try_punch()` and `Game._try_fire()`.
+  - Added `Vehicle` durability stage callouts (`50%` smoking, `25%` critical), `burning` state (`1.8s` countdown with `"Vehicle on fire, press E to get out!"` and unrestricted burning exit), and `_explode()` / `Game.on_vehicle_exploded()` (charred visuals, pooled `ShotEffects.emit_explosion()`, 3D `A11ySpatialAudio.play_explosion()`, camera shake, AoE NPC knockdowns, occupant/nearby player damage, chain-reaction vehicle damage, and `WantedSystem` crimes `vandalism`, `vehicle_explosion`, `destroy_cop`).
+
+### Verified Checks (Post-Final-Edit)
+- `tests/test_accessibility.gd`: 69 checks, 0 failures (`EXIT=0`)
+- `tests/test_accessibility_speech.gd`: 20 checks, 0 failures (`EXIT=0`)
+- `tests/test_combat.gd`: 44 checks, 0 failures (`EXIT=0`)
+- `tests/test_cover.gd`: 10 checks, 0 failures (`EXIT=0`)
+- `tests/test_game_integration.gd`: 14 checks, 0 failures (`EXIT=0`)
+- `tests/test_harbor_feel.gd`: 13 checks, 0 failures (`EXIT=0`)
+- `tests/test_save_and_audio.gd`: 41 checks, 0 failures (`EXIT=0`)
+- `tests/test_stage_one.gd`: 24 checks, 0 failures (`EXIT=0`)
+- Total headless verified: **235 checks, 0 failures**.
+- `godot_console.exe --headless --path . --quit-after 5`: exit `0`.
+- **Windows Release Export**:
+  - Exported `export/windows/OperationChaos.exe` (`109,149,184` bytes), `export/windows/OperationChaos.pck` (`114,859,772` bytes), `export/windows/libgdnvda.windows.template_release.x86_64.dll` (`559,104` bytes), and `export/windows/nvdaControllerClient64.dll` (`265,632` bytes).
+  - Verified `OperationChaos.exe --headless --quit-after 5` exits cleanly (`exit code 0`).
+- Note: Interactive gameplay with live Windows `NVDA.exe` speech output and real audio hardware listening remains to be manually verified by the user.
+
+
+## Session: 2026-11-26 — Speed-Aware Auto-Drive 20m Wall Braking, Context-Sensitive `F` Fire/Melee & Vehicle Hitbox Alignment
+
+### Summary
+Upgraded Auto-Drive (`P`) to cruise at `vehicle.max_speed` when the forward corridor (`> 20m` + braking horizon) and lateral surroundings (`>= 3.2m` clear per side) are wide open while smoothly decelerating/braking from `20m` ahead of walls and turning cleanly without high-speed crash explosions; updated `F` (`melee`) to fire the equipped gun when armed (semi-auto and held full-auto) and punch when unarmed; fixed `Player.try_punch()` cooldown lockout blocking vehicle punches; and raised `Vehicle` collision box height to `1.48m` so horizontal shots hit vehicles reliably, governed by SpecKit (`specs/006-autodrive-braking-and-f-fire/`) and ECC (`tdd-guide` + `code-reviewer`).
+
+### Key Changes
+- **Wide-Road Cruise & 20m Wall ABS Braking (`scripts/accessibility/a11y_navigation.gd`, `scripts/vehicle.gd`, `scripts/accessibility/a11y_gameplay_controller.gd`)**:
+  - Added `_scan_drive_corridor()` (3 forward bumper-width rays starting at vehicle origin with zero hood blind spot, angled escape whiskers `±24°`/`±52°`/`±82°`, and `±90°` lateral clearance rays), `_upcoming_turn_angle()`, `_autodrive_target_speed()`, `_has_rear_clearance()`, and `_handle_autodrive_recovery()`.
+  - Auto-Drive targets `vehicle.max_speed` when open ahead and wide on both sides, begins progressive deceleration at `<= 20.0m` from the front bumper (plus early speed-scaled horizon at top speed and upcoming-turn slowdowns), engages zero-drift `a11y_handbrake` ABS braking (`slip = 0.03`, high deceleration toward `0.0`) before impact, retains ABS braking on arrival until stopped, avoids reverse-slam loops when boxed in front and back, prevents `_beacon_timer` from overwriting `current_waypoint` during Auto-Pilot, and avoids interrupting critical `"Vehicle on fire, press E to get out!"` speech.
+- **Context-Sensitive `F` Fire/Melee, Punch Cooldown Fix & Vehicle Hitbox (`scripts/game.gd`, `scripts/player.gd`, `scripts/vehicle.gd`, `scripts/hud.gd`, `scripts/pedestrian.gd`)**:
+  - Updated `Game._unhandled_input()` so `melee` (`F`) triggers `_try_fire()` and held `_firing` when `player.weapon != Arsenal.Id.NONE`, and `_try_punch()` when unarmed; updated `Player._physics_process()` `fire_held` check, `GameHUD` keybind/menu labels, HUD prompts, and `A11yGameplayController._speak_context_help()`.
+  - Fixed `Player.try_punch()` setting `_punch_cd = 0.45` on a pedestrian miss before `Game._try_punch()` could fall through to `try_punch_vehicle()`.
+  - Raised `Vehicle._build_collision()` height to `1.48m` (`position.y = 0.74`) so horizontal standing shots (`pitch = -0.04`) hit vehicles instead of flying over the roof; reset `coupe.repair()` on `apply_saved_state()`, reset `a11y_drive_override`/`a11y_handbrake` on enter/set_down, and guarded empty `path` in `Pedestrian._physics_process()`.
+
+### Verified Checks (Post-Final-Edit)
+- `tests/test_accessibility.gd`: 74 checks, 0 failures
+- `tests/test_accessibility_speech.gd`: 20 checks, 0 failures
+- `tests/test_combat.gd`: 44 checks, 0 failures
+- `tests/test_cover.gd`: 10 checks, 0 failures
+- `tests/test_game_integration.gd`: 18 checks, 0 failures
+- `tests/test_harbor_feel.gd`: 13 checks, 0 failures
+- `tests/test_save_and_audio.gd`: 41 checks, 0 failures
+- `tests/test_stage_one.gd`: 24 checks, 0 failures
+- Total headless verified: **244 checks, 0 failures**.
+- `godot_console --headless --path . --quit-after 5`: exit `0`.
+- Re-exported `export/windows/OperationChaos.exe` and verified `OperationChaos.exe --headless --quit-after 5` exits cleanly (`exit code 0`).
+- Note: Interactive gameplay with live driving feel, NVDA speech, and audio hardware remains to be manually verified by the user.

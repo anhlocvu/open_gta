@@ -53,6 +53,9 @@ static func install() -> void:
 	if not InputMap.has_action("a11y_radar_cycle_prev"):
 		InputMap.add_action("a11y_radar_cycle_prev")
 		InputMap.action_add_event("a11y_radar_cycle_prev", _make_key_event(KEY_B, true))
+	if not InputMap.has_action("a11y_snap_enemy"):
+		InputMap.add_action("a11y_snap_enemy")
+		InputMap.action_add_event("a11y_snap_enemy", _make_key_event(KEY_O, true))
 	var dual_actions := {
 		"fire": [MOUSE_BUTTON_LEFT, KEY_SEMICOLON],
 		"aim": [MOUSE_BUTTON_RIGHT, KEY_APOSTROPHE],

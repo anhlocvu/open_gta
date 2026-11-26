@@ -223,9 +223,10 @@ func _physics_process(delta: float) -> void:
 		move_and_slide()
 		return
 
-	if not _has_flee_target and path.size() == 0:
+	var fleeing_to_target := mood == Mood.FLEE and _has_flee_target
+	if not fleeing_to_target and path.is_empty():
 		return
-	var dest: Vector3 = _flee_target if (mood == Mood.FLEE and _has_flee_target) else path[path_i % path.size()]
+	var dest: Vector3 = _flee_target if fleeing_to_target else path[path_i % path.size()]
 	var to := dest - global_position
 	to.y = 0.0
 	if to.length() < 1.1:

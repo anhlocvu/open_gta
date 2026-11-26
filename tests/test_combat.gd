@@ -169,6 +169,31 @@ func run() -> void:
 	check(pool.get_child_count() == 12, "shot pool remains bounded after repeated firing")
 	pool._process(0.1)
 	check(not pool.get_child(0).visible, "shot effects expire")
+
+	# Vehicle melee punch, burning countdown, and AoE explosion
+	var car := Vehicle.new()
+	car.kind = Vehicle.Kind.PARKED
+	world.add_child(car)
+	car.setup(Vehicle.Kind.PARKED, Vector3(0, 0.35, -6), 0.0)
+	var car2 := Vehicle.new()
+	car2.kind = Vehicle.Kind.PARKED
+	world.add_child(car2)
+	car2.setup(Vehicle.Kind.PARKED, Vector3(4.0, 0.35, -6), 0.0)
+	var bystander := Pedestrian.new()
+	world.add_child(bystander)
+	bystander.setup([Vector3(-3.5, 0.15, -6), Vector3(-3.5, 0.15, -6)], 0, 1)
+	p.global_position = Vector3(0, 0.05, -3.5)
+	p.rotation.y = 0.0
+	p._punch_cd = 0.0
+	await frames(3)
+	var punched_car := p.try_punch_vehicle()
+	check(punched_car == car and car.hp < 100.0, "unarmed punch damages facing vehicle")
+	car.apply_damage(200.0)
+	check(car.hp == 0.0 and car.burning and not car.exploded, "0 hp vehicle enters burning countdown before explosion")
+	await frames(130)
+	check(car.exploded and car.wrecked, "burning vehicle explodes and becomes wrecked")
+	check(bystander.downed and car2.hp < 100.0, "vehicle explosion knocks down nearby ped and chain-damages adjacent vehicle")
+
 	world.queue_free()
 	await process_frame
 	print("COMBAT: %d checks, %d failures" % [checks, failures])

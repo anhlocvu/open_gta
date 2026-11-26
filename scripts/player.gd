@@ -162,7 +162,7 @@ func _physics_process(delta: float) -> void:
 			dir = tangent * dir.dot(tangent)
 	var touch := get_tree().get_first_node_in_group("touch") as TouchControls
 	var sprint_input := Input.is_action_pressed("sprint") or (touch != null and touch.sprint)
-	var fire_held := Input.is_action_pressed("fire") or (touch != null and touch.firing)
+	var fire_held := Input.is_action_pressed("fire") or (weapon != Arsenal.Id.NONE and Input.is_action_pressed("melee")) or (touch != null and touch.firing)
 	var want_sprint := (sprint_input or tactical_remaining > 0.0) and stamina > 4.0 and not aiming and not crouched and not in_cover and reload_remaining <= 0.0 and plate_remaining <= 0.0 and _sprint_block_remaining <= 0.0 and (tactical == null or not fire_held)
 	sprinting = want_sprint and dir.length_squared() > 0.05
 	if want_sprint and dir.length_squared() > 0.05:
@@ -258,7 +258,6 @@ func heal(amount: float) -> void:
 func try_punch() -> Pedestrian:
 	if in_vehicle or locked or _punch_cd > 0.0:
 		return null
-	_punch_cd = 0.45
 	var reach := global_position + (-global_transform.basis.z * 1.5)
 	var best: Pedestrian = null
 	var best_d := 1.7
@@ -271,9 +270,44 @@ func try_punch() -> Pedestrian:
 			best_d = d
 			best = ped
 	if best:
+		_punch_cd = 0.45
 		best.knock_down()
 		velocity += -global_transform.basis.z * 4.5
 	return best
+
+
+func try_punch_vehicle() -> Vehicle:
+	if in_vehicle or locked or _punch_cd > 0.0 or not is_inside_tree():
+		return null
+	var fwd := -global_transform.basis.z
+	fwd.y = 0.0
+	fwd = fwd.normalized() if fwd.length_squared() > 0.001 else Vector3.FORWARD
+	var space := get_world_3d().direct_space_state
+	var chest := global_position + Vector3.UP * 0.9
+	var q := PhysicsRayQueryParameters3D.create(chest, chest + fwd * 2.8, 4 | 8, [get_rid()])
+	var hit := space.intersect_ray(q)
+	var target_veh: Vehicle = null
+	if not hit.is_empty() and hit.collider is Vehicle:
+		var hv := hit.collider as Vehicle
+		if not hv.occupied and not hv.exploded:
+			target_veh = hv
+	if target_veh == null:
+		var best_d := 3.4
+		for node in get_tree().get_nodes_in_group("vehicles"):
+			var v := node as Vehicle
+			if v == null or v.occupied or v.exploded:
+				continue
+			var to_v := v.global_position - global_position
+			to_v.y = 0.0
+			var d := to_v.length()
+			if d < best_d and (d < 1.6 or fwd.dot(to_v.normalized()) > 0.3):
+				best_d = d
+				target_veh = v
+	if target_veh:
+		_punch_cd = 0.45
+		combat_remaining = 1.5
+		target_veh.apply_damage(14.0)
+	return target_veh
 
 
 func give_weapon(id: int, rounds := -1) -> void:

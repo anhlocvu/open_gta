@@ -522,6 +522,7 @@ func serialize_state() -> Dictionary:
 			"hp": coupe.hp,
 			"stolen": coupe.stolen,
 			"wrecked": coupe.wrecked,
+			"exploded": coupe.exploded,
 		} if coupe else {},
 	}
 
@@ -623,12 +624,16 @@ func apply_saved_state(data: Dictionary) -> bool:
 
 	var cdata: Dictionary = data.get("coupe", {}) if data.get("coupe") is Dictionary else {}
 	if coupe and not cdata.is_empty():
+		coupe.repair()
 		coupe.global_position = SaveManager.array_to_vec3(cdata.get("pos"), city.coupe_spawn)
 		coupe.rotation.y = _safe_float(cdata.get("rot_y"), city.coupe_facing, -TAU * 4.0, TAU * 4.0)
 		coupe.speed = 0.0
 		coupe.hp = _safe_float(cdata.get("hp"), 100.0, 0.0, 100.0)
 		coupe.stolen = bool(cdata.get("stolen", _stolen))
 		coupe.wrecked = bool(cdata.get("wrecked", false))
+		coupe.exploded = bool(cdata.get("exploded", false))
+		if coupe.exploded:
+			coupe._char_vehicle_visuals()
 
 	var wdata: Dictionary = data.get("wanted", {}) if data.get("wanted") is Dictionary else {}
 	if heat:
@@ -758,15 +763,14 @@ func _unhandled_input(event: InputEvent) -> void:
 		camera.shoulder *= -1.0
 	if _action_pressed(event, &"jump"):
 		player.request_jump()
-	if _action_pressed(event, &"melee"):
-		_try_punch()
-	if _action_pressed(event, &"fire"):
-		if player.weapon == Arsenal.Id.NONE:
-			_try_punch()
-		else:
-			_firing = true
-			_try_fire()
-	if event.is_action_released("fire"):
+	if _action_pressed(event, &"melee") or _action_pressed(event, &"fire"):
+		if not player.in_vehicle:
+			if player.weapon == Arsenal.Id.NONE:
+				_try_punch()
+			else:
+				_firing = true
+				_try_fire()
+	if (event.is_action_released("fire") or event.is_action_released("melee")) and not Input.is_action_pressed("fire") and not Input.is_action_pressed("melee"):
 		_firing = false
 	if _action_pressed(event, &"cycle_weapon_up"):
 		player.cycle_weapon(1)
@@ -869,7 +873,7 @@ func _try_interact() -> void:
 
 
 func _try_punch() -> void:
-	if player.locked or player.in_vehicle:
+	if player.locked or player.in_vehicle or player._punch_cd > 0.0:
 		return
 	var officer := player.try_punch_officer()
 	if officer:
@@ -882,8 +886,15 @@ func _try_punch() -> void:
 		if a11y and a11y.audio: a11y.audio.play_punch(hit.global_position, true)
 		_scare_nearby(hit.global_position)
 		_report("assault", hit.global_position)
-	elif player._punch_cd >= 0.4:
-		if a11y and a11y.audio: a11y.audio.play_punch(player.global_position, false)
+		return
+	var veh := player.try_punch_vehicle()
+	if veh:
+		if a11y and a11y.audio: a11y.audio.play_vehicle_hit(veh.global_position, true)
+		_scare_nearby(veh.global_position)
+		_report("shoot_cop" if veh.kind == Vehicle.Kind.COP else "vandalism", veh.global_position)
+		return
+	player._punch_cd = 0.45
+	if a11y and a11y.audio: a11y.audio.play_punch(player.global_position, false)
 
 
 func _nearest_enterable() -> Vehicle:
@@ -910,6 +921,8 @@ func _enter_vehicle(v: Vehicle) -> void:
 				player.locked = false
 		)
 	active_vehicle = v
+	v.a11y_drive_override = Vector2.ZERO
+	v.a11y_handbrake = false
 	v.occupied = true
 	v.ai_enabled = false
 	v.fleeing = false
@@ -1088,7 +1101,9 @@ func _try_fire() -> void:
 		elif col is Vehicle:
 			var v := col as Vehicle
 			v.apply_damage(float(spec["dmg"]))
-			if a11y and a11y.audio: a11y.audio.play_bullet_impact(end)
+			hud.confirm_hit()
+			if a11y and a11y.audio:
+				a11y.audio.play_vehicle_hit(end, false)
 			if v.kind == Vehicle.Kind.COP:
 				_report("shoot_cop", v.global_position)
 			else:
@@ -1122,13 +1137,16 @@ func _update_base(delta: float) -> void:
 func _exit_vehicle() -> void:
 	if active_vehicle == null:
 		return
-	if abs(active_vehicle.speed) > 6.0:
+	if not active_vehicle.burning and abs(active_vehicle.speed) > 6.0:
 		return
+	_firing = false
 	var v := active_vehicle
+	v.a11y_drive_override = Vector2.ZERO
+	v.a11y_handbrake = false
 	player.global_position = v.global_position + v.global_transform.basis.x * 1.8 + Vector3(0, 0.1, 0)
 	player.rotation.y = v.rotation.y
 	v.occupied = false
-	if v.kind == Vehicle.Kind.COP or v.kind == Vehicle.Kind.CIVILIAN:
+	if (v.kind == Vehicle.Kind.COP or v.kind == Vehicle.Kind.CIVILIAN) and not v.wrecked and not v.exploded:
 		v.ai_enabled = true
 	player.in_vehicle = false
 	player.set_hidden(false)
@@ -1139,6 +1157,72 @@ func _exit_vehicle() -> void:
 	if a11y and a11y.audio:
 		a11y.audio.play_vehicle_event(&"door", v.global_position)
 	A11yUIHelper.say("Exited vehicle", true, 2, &"a11y_vehicle")
+
+
+func on_vehicle_damage_stage(v: Vehicle, stage: int) -> void:
+	if v == null or not is_instance_valid(v):
+		return
+	var near := v == active_vehicle or (player != null and player.global_position.distance_to(v.global_position) <= 16.0)
+	if not near:
+		return
+	if stage == 1:
+		A11yUIHelper.say("%s smoking, %d percent durability." % [v.display_name, int(round(v.hp))], false, 1, &"a11y_veh_dmg")
+	elif stage == 2:
+		A11yUIHelper.say("%s critical, nearly destroyed!" % v.display_name, true, 2, &"a11y_veh_dmg")
+
+
+func on_vehicle_burning(v: Vehicle) -> void:
+	if v == null or not is_instance_valid(v):
+		return
+	if a11y and a11y.audio:
+		a11y.audio.play_vehicle_fire(v.global_position)
+	if v == active_vehicle:
+		_flash_banner("VEHICLE ON FIRE!", 1.5)
+		A11yUIHelper.say("Vehicle on fire, press E to get out!", true, 3, &"a11y_veh_fire", true)
+	elif player and player.global_position.distance_to(v.global_position) <= 28.0:
+		A11yUIHelper.say("%s on fire!" % v.display_name, true, 2, &"a11y_veh_fire")
+
+
+func on_vehicle_exploded(v: Vehicle) -> void:
+	if v == null or not is_instance_valid(v) or not is_inside_tree():
+		return
+	var blast_pos := v.global_position
+	if shot_effects:
+		shot_effects.emit_explosion(blast_pos + Vector3.UP * 0.8)
+	if a11y and a11y.audio:
+		a11y.audio.play_explosion(blast_pos)
+	var player_dist := player.global_position.distance_to(blast_pos) if player else 999.0
+	if camera and player_dist <= 45.0:
+		camera.add_shake(clampf(0.42 - player_dist * 0.008, 0.08, 0.42))
+	if v == active_vehicle:
+		if a11y:
+			a11y.nav.stop_autowalk(player, "", v)
+		active_vehicle.occupied = false
+		active_vehicle = null
+		player.global_position = blast_pos + v.global_transform.basis.x * 2.2 + Vector3(0, 0.25, 0)
+		player.in_vehicle = false
+		player.set_hidden(false)
+		camera.follow = player
+		camera.set_vehicle_mode(false)
+		touch.set_driving(false)
+		player.take_damage(95.0, true)
+	elif player and not player.in_vehicle and player_dist <= 9.5:
+		player.take_damage(lerpf(85.0, 18.0, player_dist / 9.5))
+	for node in get_tree().get_nodes_in_group("peds"):
+		var ped := node as Pedestrian
+		if ped and is_instance_valid(ped) and not ped.downed and blast_pos.distance_to(ped.global_position) <= 9.5:
+			ped.knock_down()
+	for node in get_tree().get_nodes_in_group("vehicles"):
+		var other := node as Vehicle
+		if other == null or other == v or not is_instance_valid(other) or other.exploded:
+			continue
+		var d := blast_pos.distance_to(other.global_position)
+		if d <= 8.5:
+			other.apply_damage(lerpf(80.0, 30.0, d / 8.5))
+	_scare_nearby(blast_pos)
+	_report("destroy_cop" if v.kind == Vehicle.Kind.COP else "vehicle_explosion", blast_pos)
+	if player_dist <= 42.0:
+		A11yUIHelper.say("%s exploded!" % v.display_name, true, 3, &"a11y_veh_blast")
 
 
 func _report(crime: String, pos: Vector3) -> void:
@@ -1342,6 +1426,8 @@ func _set_down(p: Phase, banner: String) -> void:
 	phase = p
 	player.locked = true
 	if active_vehicle:
+		active_vehicle.a11y_drive_override = Vector2.ZERO
+		active_vehicle.a11y_handbrake = false
 		active_vehicle.occupied = false
 		active_vehicle.speed = 0.0
 		active_vehicle = null
@@ -1449,9 +1535,11 @@ func _sync_hud() -> void:
 		else:
 			hud.set_prompt("Land and slow down to exit    HP %d" % int(active_aircraft.hp))
 	elif active_vehicle:
-		var can_exit: bool = abs(active_vehicle.speed) <= 6.0
+		var can_exit: bool = active_vehicle.burning or abs(active_vehicle.speed) <= 6.0
 		touch.set_can_interact(can_exit, "EXIT")
-		if city.spray_contains(active_vehicle):
+		if active_vehicle.burning:
+			hud.set_prompt("VEHICLE ON FIRE  ·  E  EXIT NOW!")
+		elif city.spray_contains(active_vehicle):
 			hud.set_prompt("Hold still  ·  respray $200")
 		elif can_exit:
 			hud.set_prompt("E  ·  EXIT    Space  ·  e-brake    HP %d" % int(active_vehicle.hp))
@@ -1474,10 +1562,11 @@ func _sync_hud() -> void:
 		hud.set_prompt("E  ·  TAKE  RIFLE CRATE")
 	elif near:
 		touch.set_can_interact(true, "ENTER")
-		hud.set_prompt("E  ·  GET IN  " + near.display_name + "    click  ·  SHOOT")
+		var near_act := "    F / ; / click  ·  SHOOT" if player.weapon != Arsenal.Id.NONE else "    F / ; / click  ·  PUNCH"
+		hud.set_prompt("E  ·  GET IN  " + near.display_name + near_act)
 	else:
 		touch.set_can_interact(false, "ENTER")
-		var gun := "    ; / click  ·  SHOOT" if player.weapon != Arsenal.Id.NONE else "    ; / F / click  ·  PUNCH"
+		var gun := "    F / ; / click  ·  SHOOT" if player.weapon != Arsenal.Id.NONE else "    F / ; / click  ·  PUNCH"
 		hud.set_prompt((gun.strip_edges()) if phase != Phase.TITLE else "")
 
 	match phase:
