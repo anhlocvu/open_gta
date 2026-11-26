@@ -21,6 +21,8 @@ var station_pos := Vector3(200, 0.15, 38)
 var spray_pos := Vector3(-200, 0.15, 0)
 var gun_shop_pos := Vector3(-80, 0.15, -80)
 var bar_pos := Vector3(80, 0.15, 80)
+var dealership_pos := Vector3(75, 0.15, -92)
+var dealership_spawn_pos := Vector3(75, 0.35, -76)
 var base_pos := Vector3(-80, 0.15, 280)
 var aircraft_spawns: Array[Dictionary] = []
 var military_spawns: Array[Dictionary] = []
@@ -124,6 +126,10 @@ func near_bar(pos: Vector3) -> bool:
 	return pos.distance_to(bar_pos) < 5.0
 
 
+func near_dealership(pos: Vector3) -> bool:
+	return pos.distance_to(dealership_pos) < 6.0
+
+
 func on_base(pos: Vector3) -> bool:
 	return absf(pos.x - base_pos.x) < 40.0 and absf(pos.z - base_pos.z) < 34.0
 
@@ -165,11 +171,13 @@ func _grid() -> void:
 	coupe_spawn = Vector3(ave_xs[6] - 6.0, 0.35, st_zs[8])
 	coupe_facing = -PI * 0.5
 	garage_pos = Vector3((ave_xs[4] + ave_xs[5]) * 0.5, 0.15, (st_zs[1] + st_zs[2]) * 0.5)
-	hospital_pos = Vector3((ave_xs[8] + ave_xs[9]) * 0.5, 0.15, (st_zs[12] + st_zs[13]) * 0.5)
-	station_pos = Vector3((ave_xs[9] + ave_xs[10]) * 0.5, 0.15, (st_zs[8] + st_zs[9]) * 0.5)
+	hospital_pos = Vector3((ave_xs[8] + ave_xs[9]) * 0.5, 0.15, (st_zs[12] + st_zs[13]) * 0.5 + 7.2)
+	station_pos = Vector3((ave_xs[9] + ave_xs[10]) * 0.5, 0.15, (st_zs[8] + st_zs[9]) * 0.5 + 7.2)
 	spray_pos = Vector3((ave_xs[1] + ave_xs[2]) * 0.5, 0.15, (st_zs[7] + st_zs[8]) * 0.5)
 	gun_shop_pos = Vector3((ave_xs[7] + ave_xs[8]) * 0.5, 0.15, (st_zs[3] + st_zs[4]) * 0.5)
 	bar_pos = Vector3((ave_xs[3] + ave_xs[4]) * 0.5, 0.15, (st_zs[10] + st_zs[11]) * 0.5)
+	dealership_pos = Vector3((ave_xs[6] + ave_xs[7]) * 0.5, 0.15, (st_zs[4] + st_zs[5]) * 0.5 + 3.0)
+	dealership_spawn_pos = Vector3((ave_xs[6] + ave_xs[7]) * 0.5, 0.35, st_zs[5])
 	base_pos = Vector3((ave_xs[2] + ave_xs[3]) * 0.5, 0.15, st_zs[ST_N - 1] + 38.0)
 
 
@@ -245,7 +253,7 @@ func _is_park(i: int, j: int) -> bool:
 
 
 func _is_civic_block(i: int, j: int) -> bool:
-	return (i == 4 and j == 1) or (i == 8 and j == 12) or (i == 9 and j == 8) or (i == 1 and j == 7) or (i == 7 and j == 3) or (i == 3 and j == 10)
+	return (i == 4 and j == 1) or (i == 8 and j == 12) or (i == 9 and j == 8) or (i == 1 and j == 7) or (i == 7 and j == 3) or (i == 3 and j == 10) or (i == 6 and j == 4)
 
 
 func _park_block(i: int, j: int) -> void:
@@ -507,18 +515,19 @@ func _garage_zone() -> void:
 
 
 func _civic_zones() -> void:
-	_building(hospital_pos + Vector3(0, 0, -5.5), Vector3(20, 28, 16), "plaster")
-	_building(station_pos + Vector3(0, 0, -5.5), Vector3(18, 24, 15), "concrete")
+	_building(hospital_pos + Vector3(0, 0, -9.2), Vector3(20, 28, 12), "plaster")
+	_building(station_pos + Vector3(0, 0, -9.2), Vector3(18, 24, 12), "concrete")
 	_building(garage_pos + Vector3(0, 0, -7.0), Vector3(16, 14, 12), "warehouse")
 	_building(spray_pos + Vector3(0, 0, -6.0), Vector3(14, 10, 12), "concrete")
 	_spray = _pad_zone(spray_pos, Color("3aa0ff"), 9.0)
-	_mesh_box(hospital_pos + Vector3(0, 0.08, 4.2), Vector3(7, 0.05, 7), Palette.mat(Color("144028"), 0.1, 0.5, Color("3dcc6a"), 1.2))
-	_mesh_box(station_pos + Vector3(0, 0.08, 4.2), Vector3(7, 0.05, 7), Palette.mat(Color("1a2038"), 0.1, 0.5, Color("4a66ff"), 1.2))
-	_neon_sign(hospital_pos + Vector3(0, 8.4, 3.2), "HOSP")
-	_neon_sign(station_pos + Vector3(0, 8.4, 3.2), "UNIT")
+	_mesh_box(hospital_pos + Vector3(0, 0.08, 0.0), Vector3(7, 0.05, 5), Palette.mat(Color("144028"), 0.1, 0.5, Color("3dcc6a"), 1.2))
+	_mesh_box(station_pos + Vector3(0, 0.08, 0.0), Vector3(7, 0.05, 5), Palette.mat(Color("1a2038"), 0.1, 0.5, Color("4a66ff"), 1.2))
+	_neon_sign(hospital_pos + Vector3(0, 8.4, -3.0), "HOSP")
+	_neon_sign(station_pos + Vector3(0, 8.4, -3.0), "UNIT")
 	_neon_sign(spray_pos + Vector3(0, 6.2, 3.2), "SPRAY")
 	_neon_sign(gun_shop_pos + Vector3(0, 5.2, 5.4), "ARMS")
 	_neon_sign(bar_pos + Vector3(0, 5.0, 5.4), "BAR")
+	_neon_sign(dealership_pos + Vector3(0, 5.0, 0.2), "AUTO")
 
 
 func _pad_zone(pos: Vector3, color: Color, size: float) -> Area3D:
@@ -548,6 +557,12 @@ func _shops() -> void:
 	_mesh_box(bar_pos + Vector3(0, 1.05, -1.1), Vector3(5.4, 1.1, 0.85), Palette.surfaced("wood", Color.WHITE, 0.0, 0.58, 0.45))
 	_mesh_box(bar_pos + Vector3(-1.8, 1.55, 0.6), Vector3(0.55, 0.95, 0.55), Palette.surfaced("wood", Color.WHITE, 0.0, 0.65, 0.8))
 	_mesh_box(bar_pos + Vector3(1.6, 1.55, 0.8), Vector3(0.55, 0.95, 0.55), Palette.surfaced("wood", Color.WHITE, 0.0, 0.65, 0.8))
+	var dealer_center := dealership_pos + Vector3(0, 0, -5.0)
+	_storefront(dealer_center, Color("163042"), Color("48d8ff"), 14.0, 8.0)
+	_mesh_box(dealership_pos + Vector3(0, 1.05, -5.8), Vector3(5.2, 1.05, 0.75), Palette.surfaced("wood", Color.WHITE, 0.0, 0.58, 0.45))
+	var dealer_pad := Palette.mat(Color("101822"), 0.15, 0.45, Color("48d8ff"), 1.3)
+	neon_mats.append(dealer_pad)
+	_mesh_box(dealership_pos + Vector3(0, 0.08, 0.0), Vector3(6.5, 0.05, 4.5), dealer_pad)
 
 
 func _storefront(pos: Vector3, wall: Color, neon: Color, w: float, d: float) -> void:
@@ -681,7 +696,7 @@ func _markers() -> void:
 		Vector3(ave_xs[9], 0.2, st_zs[13]),
 		Vector3(ave_xs[1], 0.2, st_zs[4]),
 	]
-	health_spawns = [hospital_pos + Vector3(2.5, 0.2, 0)]
+	health_spawns = [hospital_pos + Vector3(2.2, 0.2, 0)]
 
 
 func _dashes(origin: Vector3, axis: Vector3, length: float, material: Material) -> void:

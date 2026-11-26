@@ -36,8 +36,13 @@ var sfx: CityAudio
 var a11y: A11yGameplayController
 var master_volume := 1.0
 var paused := false
+var dev_unlocked := false
+var dev_infinite_money := false
+var dev_god_mode := false
 var _banner_seq := 0
 var _next_cop_dyn_id := 0
+var _next_bought_veh_id := 0
+var _next_bought_air_id := 0
 var _settings := ConfigFile.new()
 
 
@@ -107,6 +112,7 @@ func radar_objective() -> Vector3:
 
 func _ready() -> void:
 	CombatInput.install()
+	dev_unlocked = DevMode.is_unlocked()
 	shot_effects = ShotEffects.new()
 	add_child(shot_effects)
 	randomize()
@@ -211,10 +217,7 @@ func _set_world_active(active: bool) -> void:
 				if n is Node:
 					(n as Node).process_mode = mode
 
-func set_paused(on: bool, silent := false) -> void:
-	if phase == Phase.TITLE:
-		paused = false
-		return
+func _apply_pause_state(on: bool) -> void:
 	paused = on
 	_firing = false
 	var mode := Node.PROCESS_MODE_DISABLED if on else Node.PROCESS_MODE_INHERIT
@@ -230,6 +233,18 @@ func set_paused(on: bool, silent := false) -> void:
 	if on and sfx:
 		sfx.tick(0.0, null, null, 0)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if (on or phase in [Phase.TITLE, Phase.BUSTED, Phase.WASTED] or DisplayServer.is_touchscreen_available()) else Input.MOUSE_MODE_CAPTURED
+
+
+func set_paused(on: bool, silent := false) -> void:
+	if phase == Phase.TITLE:
+		paused = false
+		return
+	if not on:
+		if hud and hud.is_dev_panel_open():
+			hud.show_dev_panel(false)
+		if hud and hud.is_dealer_open():
+			hud.show_dealership(false, money, true)
+	_apply_pause_state(on)
 	hud.show_pause(on, silent)
 
 func toggle_pause() -> void:
@@ -451,6 +466,8 @@ func district_name(pos: Vector3) -> String:
 		return "Police Precinct"
 	if pos.distance_to(city.spray_pos) < 42.0:
 		return "West Docks"
+	if pos.distance_to(city.dealership_pos) < 38.0:
+		return "Auto Dealership"
 	if city.st_zs.size() > 3 and pos.z < city.st_zs[3]:
 		return "Warehouse District"
 	if city.st_zs.size() > 10 and absf(pos.x) < 110.0 and pos.z < city.st_zs[10]:
@@ -490,6 +507,53 @@ func _cleanup_dynamic_cops(keep_ids: Dictionary[String, bool]) -> void:
 			cop.remove_from_group("vehicles")
 			cop.remove_from_group("cops")
 			cop.queue_free()
+
+
+func _cleanup_dynamic_bought(keep_veh_ids: Dictionary[String, bool], keep_air_ids: Dictionary[String, bool]) -> void:
+	if not is_inside_tree():
+		return
+	for v in _collect_vehicles_by_id().values():
+		if v.save_id.begins_with("bought_veh:") and not keep_veh_ids.has(v.save_id):
+			v.remove_from_group("vehicles")
+			v.queue_free()
+	for jet in _collect_aircraft_by_id().values():
+		if jet.save_id.begins_with("bought_air:") and not keep_air_ids.has(jet.save_id):
+			jet.remove_from_group("aircraft")
+			jet.queue_free()
+
+
+func _spawn_bought_vehicle(vid: String, path: String, dname: String, tint: String, pos: Vector3, yaw: float) -> Vehicle:
+	var safe_path := path if GameModels.is_valid_car_model_path(path) else "res://assets/cars/real/NormalCar1.fbx"
+	var safe_tint := tint if (tint != "" and Color.html_is_valid(tint)) else ""
+	var v := Vehicle.new()
+	v.kind = Vehicle.Kind.PARKED
+	v.save_id = vid
+	v.player_owned = true
+	v.custom_model_path = safe_path
+	v.custom_display_name = dname if dname != "" else "Car"
+	v.custom_tint = safe_tint
+	if vid.begins_with("bought_veh:"):
+		var suffix := vid.substr(11)
+		if suffix.is_valid_int():
+			_next_bought_veh_id = maxi(_next_bought_veh_id, suffix.to_int() + 1)
+	add_child(v)
+	v.setup(Vehicle.Kind.PARKED, pos, yaw)
+	v.bind_graph(roads)
+	return v
+
+
+func _spawn_bought_aircraft(aid: String, civilian_plane: bool, pos: Vector3, yaw: float) -> Aircraft:
+	var jet := Aircraft.new()
+	jet.save_id = aid
+	jet.player_owned = true
+	jet.civilian_variant = civilian_plane
+	if aid.begins_with("bought_air:"):
+		var suffix := aid.substr(11)
+		if suffix.is_valid_int():
+			_next_bought_air_id = maxi(_next_bought_air_id, suffix.to_int() + 1)
+	add_child(jet)
+	jet.setup(pos, yaw)
+	return jet
 
 
 func _seat_in_vehicle(v: Vehicle) -> void:
@@ -696,11 +760,15 @@ func apply_saved_state(data: Dictionary) -> bool:
 	var saved_w := SaveManager.safe_int(pdata.get("weapon"), Arsenal.Id.NONE, Arsenal.Id.NONE, Arsenal.Id.SHOTGUN)
 	player.weapon = saved_w if (saved_w == Arsenal.Id.NONE or player.owned_weapons.has(saved_w)) else Arsenal.Id.NONE
 
+	_cleanup_dynamic_bought({}, {})
+	_next_bought_veh_id = 0
+	_next_bought_air_id = 0
 	var veh_by_id := _collect_vehicles_by_id()
 	var air_by_id := _collect_aircraft_by_id()
+	var seen_veh_ids: Dictionary[String, bool] = {}
+	var seen_air_ids: Dictionary[String, bool] = {}
 	var vehicles_raw: Variant = data.get("vehicles")
 	if vehicles_raw is Array and not (vehicles_raw as Array).is_empty():
-		var seen_veh_ids: Dictionary[String, bool] = {}
 		for raw_v in vehicles_raw:
 			if not (raw_v is Dictionary):
 				continue
@@ -712,6 +780,16 @@ func apply_saved_state(data: Dictionary) -> bool:
 			var target_v: Vehicle = veh_by_id.get(vid)
 			if target_v == null and vid.begins_with("cop_dyn:"):
 				target_v = _make_cop(Vector3.ZERO, cops.size(), vid)
+				veh_by_id[vid] = target_v
+			elif target_v == null and vid.begins_with("bought_veh:"):
+				target_v = _spawn_bought_vehicle(
+					vid,
+					SaveManager.safe_str(vd.get("custom_model_path")),
+					SaveManager.safe_str(vd.get("custom_display_name"), "Car"),
+					SaveManager.safe_str(vd.get("custom_tint")),
+					Vector3.ZERO,
+					0.0
+				)
 				veh_by_id[vid] = target_v
 			if target_v != null:
 				target_v.apply_save_dict(vd)
@@ -738,9 +816,16 @@ func apply_saved_state(data: Dictionary) -> bool:
 				continue
 			var ad := raw_a as Dictionary
 			var aid := SaveManager.safe_str(ad.get("id"))
+			if aid == "":
+				continue
+			seen_air_ids[aid] = true
 			var target_air: Aircraft = air_by_id.get(aid)
-			if aid != "" and target_air != null:
+			if target_air == null and aid.begins_with("bought_air:"):
+				target_air = _spawn_bought_aircraft(aid, bool(ad.get("civilian_variant", false)), Vector3.ZERO, 0.0)
+				air_by_id[aid] = target_air
+			if target_air != null:
 				target_air.apply_save_dict(ad)
+	_cleanup_dynamic_bought(seen_veh_ids, seen_air_ids)
 
 	var wdata: Dictionary = data.get("wanted", {}) if data.get("wanted") is Dictionary else {}
 	if heat:
@@ -838,8 +923,22 @@ func _action_pressed(event: InputEvent, action: StringName) -> bool:
 func _unhandled_input(event: InputEvent) -> void:
 	if hud.capture_binding(event):
 		return
+	if phase != Phase.TITLE and dev_unlocked and _action_pressed(event, &"dev_panel"):
+		toggle_dev_panel()
+		get_viewport().set_input_as_handled()
+		return
 	if a11y and a11y.handle_input(event):
 		get_viewport().set_input_as_handled()
+		return
+	if hud.is_dev_panel_open():
+		if event is InputEventKey and event.pressed and not event.echo and (event.keycode == KEY_ESCAPE or event.physical_keycode == KEY_ESCAPE):
+			toggle_dev_panel(0)
+			get_viewport().set_input_as_handled()
+		return
+	if hud.is_dealer_open():
+		if event is InputEventKey and event.pressed and not event.echo and (event.keycode == KEY_ESCAPE or event.physical_keycode == KEY_ESCAPE):
+			close_dealership()
+			get_viewport().set_input_as_handled()
 		return
 	if phase != Phase.TITLE and ((not paused and _action_pressed(event, &"return_menu")) or (event is InputEventKey and event.pressed and not event.echo and (event.keycode == KEY_ESCAPE or event.physical_keycode == KEY_ESCAPE))):
 		toggle_pause()
@@ -860,6 +959,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if player.locked or phase in [Phase.BUSTED, Phase.WASTED]:
 		return
+	if city and city.near_dealership(player.global_position) and not player.in_vehicle:
+		if event is InputEventKey and event.pressed and not event.echo and (event.keycode in [KEY_ENTER, KEY_KP_ENTER] or event.physical_keycode in [KEY_ENTER, KEY_KP_ENTER]):
+			open_dealership()
+			get_viewport().set_input_as_handled()
+			return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		camera.add_look(event.relative)
 	if event is InputEventMouseButton and event.pressed and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
@@ -1034,6 +1138,7 @@ func _enter_vehicle(v: Vehicle) -> void:
 				player.locked = false
 		)
 	_seat_in_vehicle(v)
+	v.player_owned = true
 	if v.kind == Vehicle.Kind.COUPE and not _stolen:
 		_stolen = true
 		v.stolen = true
@@ -1069,6 +1174,7 @@ func _nearest_aircraft() -> Aircraft:
 func _enter_aircraft(jet: Aircraft) -> void:
 	_firing = false
 	_seat_in_aircraft(jet)
+	jet.player_owned = true
 	_report("steal_jet", jet.global_position)
 	A11yUIHelper.say("Boarded %s" % jet.display_name, true, 2, &"a11y_vehicle")
 
@@ -1093,10 +1199,11 @@ func _exit_aircraft() -> void:
 
 
 func _use_bar() -> void:
-	if money < 40:
+	if not dev_infinite_money and money < 40:
 		_flash_banner("BAR  ·  $40 needed", 1.4)
 		return
-	money -= 40
+	if not dev_infinite_money:
+		money -= 40
 	player.heal(40.0)
 	player.stamina = 100.0
 	if a11y and a11y.audio: a11y.audio.play_shop_cue()
@@ -1132,26 +1239,28 @@ func _buy_weapon(id: int) -> void:
 	if player.owned_weapons.has(id):
 		_buy_ammo()
 		return
-	if money < price:
+	if not dev_infinite_money and money < price:
 		_flash_banner("$%d needed" % price, 1.3)
 		return
-	money -= price
+	if not dev_infinite_money:
+		money -= price
 	player.give_weapon(id)
 	if a11y and a11y.audio: a11y.audio.play_shop_cue()
-	_flash_banner("%s  -$%d" % [spec["name"], price], 1.5)
+	_flash_banner("%s  -$%d" % [spec["name"], 0 if dev_infinite_money else price], 1.5)
 
 
 func _buy_ammo() -> void:
 	if player.weapon == Arsenal.Id.NONE:
 		_flash_banner("Buy a gun first", 1.2)
 		return
-	if money < Arsenal.ammo_price():
+	if not dev_infinite_money and money < Arsenal.ammo_price():
 		_flash_banner("$80 needed", 1.2)
 		return
-	money -= Arsenal.ammo_price()
+	if not dev_infinite_money:
+		money -= Arsenal.ammo_price()
 	player.add_ammo(int(Arsenal.spec(player.weapon)["ammo"]))
 	if a11y and a11y.audio: a11y.audio.play_shop_cue()
-	_flash_banner("AMMO  -$80", 1.3)
+	_flash_banner("AMMO  -$%d" % [0 if dev_infinite_money else Arsenal.ammo_price()], 1.3)
 
 
 func _try_fire() -> void:
@@ -1481,13 +1590,14 @@ func _check_services() -> void:
 	if active_vehicle == null or _spray_cd > 0.0:
 		return
 	if city.spray_contains(active_vehicle) and abs(active_vehicle.speed) < 3.0:
-		if money >= 200:
-			money -= 200
+		if dev_infinite_money or money >= 200:
+			if not dev_infinite_money:
+				money -= 200
 			heat.clear()
 			active_vehicle.repair()
 			_spray_cd = 4.0
 			if a11y and a11y.audio: a11y.audio.play_shop_cue()
-			_flash_banner("RESPRAY  -$200", 1.8)
+			_flash_banner("RESPRAY  -$%d" % [0 if dev_infinite_money else 200], 1.8)
 		else:
 			hud.set_prompt("Spray shop  ·  $200 needed")
 
@@ -1552,9 +1662,9 @@ func _respawn() -> void:
 	player.stamina = 100.0
 	player.locked = false
 	if phase == Phase.BUSTED:
-		player.global_position = city.station_pos + Vector3(0, 0.2, 4)
+		player.global_position = city.station_pos + Vector3(0, 0.2, 2.0)
 	else:
-		player.global_position = city.hospital_pos + Vector3(0, 0.2, 4)
+		player.global_position = city.hospital_pos + Vector3(0, 0.2, 2.0)
 	camera.follow = player
 	camera.set_vehicle_mode(false)
 	phase = Phase.FREE if _delivered else (Phase.DELIVER if _stolen else Phase.STEAL)
@@ -1647,6 +1757,9 @@ func _sync_hud() -> void:
 	elif city.near_gun_shop(player.global_position):
 		touch.set_can_interact(false, "BUY")
 		hud.set_prompt("1 pistol $250   2 SMG $600   3 rifle $900   4 ammo $80   5 shotgun $750")
+	elif city.near_dealership(player.global_position):
+		touch.set_can_interact(false, "DEALER")
+		hud.set_prompt("ENTER  ·  VEHICLE DEALERSHIP  (Buy Cars & Aircraft)")
 	elif city.near_bar(player.global_position):
 		touch.set_can_interact(true, "DRINK")
 		hud.set_prompt("E  ·  WHISKEY $40  ·  heals you")
@@ -1719,3 +1832,163 @@ func _update_beacon() -> void:
 	beacon.visible = true
 	dest.y += 2.7 + sin(float(Time.get_ticks_msec()) * 0.004) * 0.28
 	beacon.global_position = dest
+
+
+func toggle_dev_panel(force_state := -1) -> void:
+	if not dev_unlocked or phase in [Phase.TITLE, Phase.BUSTED, Phase.WASTED] or hud == null:
+		return
+	var target_open := (not hud.is_dev_panel_open()) if force_state < 0 else (force_state > 0)
+	if target_open and hud.is_dealer_open():
+		hud.show_dealership(false, money, true)
+	if target_open and hud._start_panel.visible:
+		hud.show_pause(false, true)
+	_apply_pause_state(target_open)
+	hud.show_dev_panel(target_open)
+
+
+func dev_grant_infinite_money() -> void:
+	if not dev_unlocked:
+		return
+	dev_infinite_money = true
+	money = 999999999
+	_sync_hud()
+	_flash_banner("DEV: INFINITE MONEY", 1.5)
+	A11yUIHelper.say("Infinite money enabled. Cash 999,999,999 dollars.", true, 2, &"a11y_dev", true)
+
+
+func dev_toggle_infinite_ammo(on: bool) -> void:
+	if not dev_unlocked or player == null:
+		return
+	player.infinite_ammo = on
+	if on:
+		for wid in [Arsenal.Id.PISTOL, Arsenal.Id.SMG, Arsenal.Id.RIFLE, Arsenal.Id.SHOTGUN]:
+			if not player.owned_weapons.has(wid):
+				player.owned_weapons.append(wid)
+			player.ammo[wid] = 9999
+			player.magazines[wid] = Arsenal.data(wid).magazine_size
+		if player.weapon == Arsenal.Id.NONE:
+			player.weapon = Arsenal.Id.RIFLE
+		if a11y:
+			a11y._prev_weapon = player.weapon
+	_sync_hud()
+	_flash_banner("DEV: INFINITE AMMO ON" if on else "DEV: INFINITE AMMO OFF", 1.5)
+	A11yUIHelper.say("Infinite ammo %s." % ("enabled, all weapons unlocked" if on else "disabled"), true, 2, &"a11y_dev", true)
+
+
+func dev_clear_wanted() -> void:
+	if not dev_unlocked or heat == null:
+		return
+	heat.clear()
+	_last_wanted = 0
+	for cop in cops:
+		if is_instance_valid(cop):
+			cop.chase_target = null
+	hud.set_crime("")
+	_sync_hud()
+	_flash_banner("DEV: WANTED CLEARED", 1.5)
+	A11yUIHelper.say("Wanted level cleared.", true, 2, &"a11y_dev", true)
+
+
+func dev_full_health() -> void:
+	if not dev_unlocked or player == null:
+		return
+	player.health = 100.0
+	player.stamina = 100.0
+	if player.tactical:
+		player.vitality.armor = player.tactical.armor_maximum
+		player.armor_plates = player.tactical.plate_capacity
+	_sync_hud()
+	A11yUIHelper.say("Health, stamina, and armor restored.", true, 2, &"a11y_dev", true)
+
+
+func dev_toggle_god_mode(on: bool) -> void:
+	if not dev_unlocked or player == null:
+		return
+	dev_god_mode = on
+	player.god_mode = on
+	if on:
+		player.health = 100.0
+	A11yUIHelper.say("God mode %s." % ("enabled" if on else "disabled"), true, 2, &"a11y_dev", true)
+
+
+func dev_repair_vehicle() -> void:
+	if not dev_unlocked:
+		return
+	if active_vehicle and is_instance_valid(active_vehicle):
+		active_vehicle.repair()
+		A11yUIHelper.say("%s repaired." % active_vehicle.display_name, true, 2, &"a11y_dev", true)
+	elif active_aircraft and is_instance_valid(active_aircraft):
+		active_aircraft.hp = 140.0
+		active_aircraft.wrecked = false
+		A11yUIHelper.say("%s repaired." % active_aircraft.display_name, true, 2, &"a11y_dev", true)
+	else:
+		A11yUIHelper.say("Enter a vehicle or aircraft first.", true, 2, &"a11y_dev", true)
+
+
+func open_dealership() -> void:
+	if phase in [Phase.TITLE, Phase.BUSTED, Phase.WASTED] or hud == null or player == null or player.in_vehicle:
+		return
+	if hud.is_dev_panel_open():
+		hud.show_dev_panel(false)
+	_apply_pause_state(true)
+	hud.show_dealership(true, money)
+
+
+func close_dealership(silent := false) -> void:
+	if hud == null or not hud.is_dealer_open():
+		return
+	hud.show_dealership(false, money, silent)
+	_apply_pause_state(false)
+
+
+func _find_dealership_spawn(is_aircraft: bool) -> Vector3:
+	var base := city.dealership_spawn_pos
+	var clearance := 10.5 if is_aircraft else 5.5
+	for offset in [0.0, 9.0, -9.0, 18.0, -18.0, 27.0, -27.0]:
+		var candidate := base + Vector3(offset, 0.35 if is_aircraft else 0.0, 0.0)
+		var blocked := false
+		if is_inside_tree():
+			for grp in [&"vehicles", &"aircraft"]:
+				for n in get_tree().get_nodes_in_group(grp):
+					if n is Node3D and is_instance_valid(n) and (n as Node3D).global_position.distance_to(candidate) < clearance:
+						blocked = true
+						break
+				if blocked:
+					break
+		if not blocked:
+			return candidate
+	return base + Vector3(0.0, 0.35 if is_aircraft else 0.0, 0.0)
+
+
+func buy_dealership_item(item_id: String) -> bool:
+	var item := GameModels.dealership_item(item_id)
+	if item.is_empty():
+		return false
+	var price := int(item.get("price", 0))
+	var item_name := str(item.get("name", "Vehicle"))
+	if not dev_infinite_money and money < price:
+		_flash_banner("$%d needed" % price, 1.4)
+		A11yUIHelper.say("Need %d dollars for %s." % [price, item_name], true, 2, &"a11y_shop", true)
+		return false
+	if not dev_infinite_money:
+		money -= price
+	close_dealership(true)
+	var is_air := bool(item.get("is_aircraft", false))
+	var spawn_pos := _find_dealership_spawn(is_air)
+	var spawn_yaw := -PI * 0.5
+	if is_air:
+		var aid := "bought_air:%d" % _next_bought_air_id
+		_next_bought_air_id += 1
+		var jet := _spawn_bought_aircraft(aid, bool(item.get("civilian_plane", false)), spawn_pos, spawn_yaw)
+		_seat_in_aircraft(jet)
+	else:
+		var vid := "bought_veh:%d" % _next_bought_veh_id
+		_next_bought_veh_id += 1
+		var v := _spawn_bought_vehicle(vid, str(item.get("path", "")), item_name, str(item.get("tint", "")), spawn_pos, spawn_yaw)
+		_seat_in_vehicle(v)
+	if a11y and a11y.audio:
+		a11y.audio.play_shop_cue()
+	_sync_hud()
+	_flash_banner("%s  -$%d" % [item_name, 0 if dev_infinite_money else price], 1.8)
+	A11yUIHelper.say("Purchased %s for %d dollars. Seated outside dealership." % [item_name, 0 if dev_infinite_money else price], true, 3, &"a11y_shop", true)
+	return true

@@ -59,21 +59,26 @@ func _draw() -> void:
 		if v == null or v.occupied:
 			continue
 		var col := Color(0.55, 0.6, 0.7, 0.8)
-		var matches := active_cat == A11yRadar.Category.PLACES
+		var matches := active_cat == A11yRadar.Category.VEHICLES or (active_cat == A11yRadar.Category.ASSETS and v.player_owned)
 		if v.kind == Vehicle.Kind.COP:
 			col = Color("ff4a4a")
-			matches = active_cat == A11yRadar.Category.ENEMIES
+			matches = active_cat == A11yRadar.Category.ENEMIES or active_cat == A11yRadar.Category.VEHICLES or (active_cat == A11yRadar.Category.ASSETS and v.player_owned)
 		elif v.kind == Vehicle.Kind.COUPE:
 			col = Palette.amber()
-			matches = active_cat == A11yRadar.Category.PLACES or active_cat == A11yRadar.Category.OBJECTIVES
+			matches = active_cat == A11yRadar.Category.VEHICLES or active_cat == A11yRadar.Category.OBJECTIVES or (active_cat == A11yRadar.Category.ASSETS and v.player_owned)
 		elif v.kind == Vehicle.Kind.MILITARY:
 			col = Color("6a8a3a")
+		if active_cat == A11yRadar.Category.ASSETS and v.player_owned:
+			col = Color("5cf2ff")
 		_blip(origin, v.global_position, c, r.x - 8.0, _dim_col(col, active_cat, matches), 3.2)
 	for node in get_tree().get_nodes_in_group("aircraft"):
 		var jet := node as Node3D
 		if jet == null:
 			continue
-		_blip(origin, jet.global_position, c, r.x - 8.0, _dim_col(Color("9ad46a"), active_cat, active_cat == A11yRadar.Category.PLACES), 4.0)
+		var jet_owned := bool(jet.get("player_owned"))
+		var jmatch := active_cat == A11yRadar.Category.VEHICLES or (active_cat == A11yRadar.Category.ASSETS and jet_owned)
+		var jcol := Color("5cf2ff") if (active_cat == A11yRadar.Category.ASSETS and jet_owned) else Color("9ad46a")
+		_blip(origin, jet.global_position, c, r.x - 8.0, _dim_col(jcol, active_cat, jmatch), 4.0)
 	for node in get_tree().get_nodes_in_group("world_pickups"):
 		var pk := node as Node3D
 		if pk == null or bool(pk.get("taken")):
@@ -85,6 +90,11 @@ func _draw() -> void:
 			var pm := active_cat == A11yRadar.Category.PLACES
 			_blip(origin, city.gun_shop_pos, c, r.x - 8.0, _dim_col(Color("c45a2a"), active_cat, pm), 2.6)
 			_blip(origin, city.bar_pos, c, r.x - 8.0, _dim_col(Color("f0a030"), active_cat, pm), 2.6)
+			_blip(origin, city.hospital_pos, c, r.x - 8.0, _dim_col(Color("3dcc6a"), active_cat, pm), 2.6)
+			_blip(origin, city.station_pos, c, r.x - 8.0, _dim_col(Color("4a66ff"), active_cat, pm), 2.6)
+			_blip(origin, city.spray_pos, c, r.x - 8.0, _dim_col(Color("3aa0ff"), active_cat, pm), 2.6)
+			_blip(origin, city.garage_pos, c, r.x - 8.0, _dim_col(Color("e8c84a"), active_cat, pm), 2.6)
+			_blip(origin, city.dealership_pos, c, r.x - 8.0, _dim_col(Color("48d8ff"), active_cat, pm), 2.8)
 			_blip(origin, city.base_pos, c, r.x - 8.0, _dim_col(Color("6dff88"), active_cat, pm), 3.0)
 	if game and game.has_method("radar_objective"):
 		var obj: Vector3 = game.radar_objective()

@@ -10,6 +10,10 @@ const GRAVITY := 32.0
 @export var kind: Kind = Kind.COUPE
 
 var save_id := ""
+var player_owned := false
+var custom_model_path := ""
+var custom_display_name := ""
+var custom_tint := ""
 var occupied := false
 var ai_enabled := false
 var chase_target: Node3D
@@ -154,11 +158,15 @@ func _build_near() -> void:
 
 func _build_mesh() -> void:
 	var spec := Models.car_for(kind, save_id)
+	if custom_model_path != "":
+		spec = {"path": custom_model_path, "name": custom_display_name if custom_display_name != "" else str(spec["name"])}
 	display_name = spec["name"]
 	var vis := Models.instance_car(spec["path"])
 	add_child(vis)
 	_wheels = Models.car_wheels(vis)
-	if kind == Kind.COUPE:
+	if custom_tint != "" and Color.html_is_valid(custom_tint):
+		Models.tint_car(vis, Color(custom_tint))
+	elif kind == Kind.COUPE:
 		Models.tint_car(vis, Color("e39a22"))
 	elif kind == Kind.MILITARY:
 		Models.tint_car(vis, Color("4a5336"))
@@ -564,6 +572,10 @@ func to_save_dict() -> Dictionary:
 	return {
 		"id": save_id,
 		"kind": int(kind),
+		"player_owned": player_owned,
+		"custom_model_path": custom_model_path,
+		"custom_display_name": custom_display_name,
+		"custom_tint": custom_tint,
 		"pos": SaveManager.vec3_to_array(global_position),
 		"rot_y": rotation.y,
 		"hp": hp,
@@ -600,6 +612,7 @@ func apply_save_dict(d: Dictionary) -> void:
 	occupied = false
 	chase_target = null
 	last_impact = 0.0
+	player_owned = bool(d.get("player_owned", false))
 	hp = SaveManager.safe_float(d.get("hp"), 100.0, 0.0, 100.0)
 	stolen = bool(d.get("stolen", false))
 	wrecked = bool(d.get("wrecked", false))

@@ -56,6 +56,15 @@ var _waiting_action := ""
 var _waiting_prev_text := ""
 var _binding_button: Button
 var _in_pause := false
+var _dev_panel: ColorRect
+var _dev_first_btn: Button
+var _dev_inf_ammo_chk: CheckButton
+var _dev_god_chk: CheckButton
+var _dealer_panel: ColorRect
+var _dealer_cash_lbl: Label
+var _dealer_list: VBoxContainer
+var _dealer_close_btn: Button
+var _dealer_first_btn: Button
 
 
 func _game() -> Node:
@@ -439,6 +448,191 @@ func _build() -> void:
 	_settings_content.visible = false
 	_settings_scroll.add_child(_settings_content)
 
+	_build_dev_panel()
+	_build_dealership_panel()
+
+
+func _make_modal_shell(title_text: String, subtitle_text: String, list_height: float) -> Dictionary:
+	var overlay := ColorRect.new()
+	overlay.color = Color(0.05, 0.08, 0.12, 0.88)
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	overlay.visible = false
+	add_child(overlay)
+
+	var center := CenterContainer.new()
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(center)
+
+	var frame := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.08, 0.11, 0.16, 0.96)
+	sb.border_color = Color("48d8ff")
+	sb.set_border_width_all(2)
+	sb.set_corner_radius_all(10)
+	sb.set_content_margin_all(20)
+	frame.add_theme_stylebox_override("panel", sb)
+	frame.custom_minimum_size = Vector2(620, 0)
+	center.add_child(frame)
+
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 10)
+	frame.add_child(col)
+
+	var heading := _label(26, Color("f0e6c8"), title_text)
+	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(heading)
+
+	var sub := _label(15, Color("48d8ff"), subtitle_text)
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(sub)
+
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(580, list_height)
+	scroll.follow_focus = true
+	col.add_child(scroll)
+
+	var list := VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list.add_theme_constant_override("separation", 8)
+	scroll.add_child(list)
+
+	return {"overlay": overlay, "col": col, "sub": sub, "list": list}
+
+
+func _build_dev_panel() -> void:
+	var shell := _make_modal_shell("DEVELOPER PANEL", "Developer Tools · F1 or Esc to close", 320.0)
+	_dev_panel = shell["overlay"]
+	var list: VBoxContainer = shell["list"]
+	var col: VBoxContainer = shell["col"]
+
+	_dev_first_btn = _primary_button("ADD INFINITE MONEY ($999,999,999)", func() -> void:
+		var g := _game()
+		if g and g.has_method("dev_grant_infinite_money"): g.dev_grant_infinite_money())
+	list.add_child(_dev_first_btn)
+	A11yUIHelper.wire_button(_dev_first_btn, "Sets cash to 999,999,999 dollars and prevents spending")
+
+	_dev_inf_ammo_chk = CheckButton.new()
+	_dev_inf_ammo_chk.text = "Infinite Ammo + All Weapons"
+	list.add_child(_dev_inf_ammo_chk)
+	A11yUIHelper.wire_toggle(_dev_inf_ammo_chk, "Infinite Ammo and All Weapons")
+	_dev_inf_ammo_chk.toggled.connect(func(on: bool) -> void:
+		var g := _game()
+		if g and g.has_method("dev_toggle_infinite_ammo"): g.dev_toggle_infinite_ammo(on))
+
+	var clear_btn := _mode_button("CLEAR WANTED LEVEL")
+	clear_btn.pressed.connect(func() -> void:
+		var g := _game()
+		if g and g.has_method("dev_clear_wanted"): g.dev_clear_wanted())
+	list.add_child(clear_btn)
+	A11yUIHelper.wire_button(clear_btn, "Immediately removes all wanted stars and stops police pursuit")
+
+	var heal_btn := _mode_button("FULL HEALTH & ARMOR")
+	heal_btn.pressed.connect(func() -> void:
+		var g := _game()
+		if g and g.has_method("dev_full_health"): g.dev_full_health())
+	list.add_child(heal_btn)
+	A11yUIHelper.wire_button(heal_btn, "Restores 100 health, stamina, and full armor")
+
+	_dev_god_chk = CheckButton.new()
+	_dev_god_chk.text = "God Mode (Invincible)"
+	list.add_child(_dev_god_chk)
+	A11yUIHelper.wire_toggle(_dev_god_chk, "God Mode Invincibility")
+	_dev_god_chk.toggled.connect(func(on: bool) -> void:
+		var g := _game()
+		if g and g.has_method("dev_toggle_god_mode"): g.dev_toggle_god_mode(on))
+
+	var repair_btn := _mode_button("REPAIR CURRENT VEHICLE")
+	repair_btn.pressed.connect(func() -> void:
+		var g := _game()
+		if g and g.has_method("dev_repair_vehicle"): g.dev_repair_vehicle())
+	list.add_child(repair_btn)
+	A11yUIHelper.wire_button(repair_btn, "Restores 100 percent durability to active vehicle or aircraft")
+
+	var close_btn := _mode_button("CLOSE DEV PANEL (F1 / ESC)")
+	close_btn.pressed.connect(func() -> void:
+		var g := _game()
+		if g and g.has_method("toggle_dev_panel"): g.toggle_dev_panel(0))
+	col.add_child(close_btn)
+	A11yUIHelper.wire_button(close_btn, "Return to gameplay")
+
+
+func _build_dealership_panel() -> void:
+	var shell := _make_modal_shell("VEHICLE DEALERSHIP", "Press Enter to purchase and spawn outside", 360.0)
+	_dealer_panel = shell["overlay"]
+	_dealer_cash_lbl = shell["sub"]
+	_dealer_list = shell["list"]
+	var col: VBoxContainer = shell["col"]
+
+	_dealer_close_btn = _mode_button("CLOSE DEALERSHIP (ESC)")
+	_dealer_close_btn.pressed.connect(func() -> void:
+		var g := _game()
+		if g and g.has_method("close_dealership"): g.close_dealership())
+	col.add_child(_dealer_close_btn)
+	A11yUIHelper.wire_button(_dealer_close_btn, "Exit dealership menu")
+
+
+func is_dev_panel_open() -> bool:
+	return _dev_panel != null and _dev_panel.visible
+
+
+func is_dealer_open() -> bool:
+	return _dealer_panel != null and _dealer_panel.visible
+
+
+func show_dev_panel(on: bool) -> void:
+	if _dev_panel == null:
+		return
+	_dev_panel.visible = on
+	if radar:
+		radar.visible = not on
+	var g := _game()
+	if on and g:
+		if _dev_inf_ammo_chk and g.get("player"):
+			_dev_inf_ammo_chk.set_pressed_no_signal(bool(g.player.infinite_ammo))
+		if _dev_god_chk:
+			_dev_god_chk.set_pressed_no_signal(bool(g.get("dev_god_mode")))
+		A11yUIHelper.say("Developer Panel opened. Use Tab or arrows to navigate.", true, 3, &"ui_screen", true)
+		A11yUIHelper.grab_focus_safe(_dev_first_btn)
+	elif not on:
+		A11yUIHelper.release_focus_safe(get_viewport())
+		A11yUIHelper.say("Developer Panel closed.", true, 2, &"ui_screen", true)
+
+
+func show_dealership(on: bool, cash := 0, silent := false) -> void:
+	if _dealer_panel == null:
+		return
+	_dealer_panel.visible = on
+	if radar:
+		radar.visible = not on
+	if on:
+		if _dealer_cash_lbl:
+			_dealer_cash_lbl.text = "Cash: $%d  ·  Select a vehicle or aircraft and press Enter" % cash
+		for child in _dealer_list.get_children():
+			_dealer_list.remove_child(child)
+			child.queue_free()
+		_dealer_first_btn = null
+		var catalog := GameModels.dealership_catalog()
+		for item in catalog:
+			var item_id := str(item.get("id", ""))
+			var item_name := str(item.get("name", "Vehicle"))
+			var cat := str(item.get("category", "Car"))
+			var price := int(item.get("price", 1000))
+			var btn := _mode_button("%s  ·  %s  ·  $%d" % [item_name, cat, price])
+			btn.pressed.connect(func() -> void:
+				var g := _game()
+				if g and g.has_method("buy_dealership_item"): g.buy_dealership_item(item_id))
+			_dealer_list.add_child(btn)
+			A11yUIHelper.wire_button(btn, "%s, %d dollars" % [cat, price])
+			if _dealer_first_btn == null:
+				_dealer_first_btn = btn
+		A11yUIHelper.say("Vehicle Dealership menu. Cash %d dollars. %d models available." % [cash, catalog.size()], true, 3, &"ui_screen", true)
+		A11yUIHelper.grab_focus_safe(_dealer_first_btn if _dealer_first_btn else _dealer_close_btn)
+	else:
+		A11yUIHelper.release_focus_safe(get_viewport())
+		if not silent:
+			A11yUIHelper.say("Exited dealership menu.", true, 2, &"ui_screen", true)
+
 
 func _show_settings() -> void:
 	var g := _game()
@@ -736,6 +930,24 @@ func _input(event: InputEvent) -> void:
 	if _waiting_action != "" and capture_binding(event):
 		get_viewport().set_input_as_handled()
 		return
+	if is_dev_panel_open():
+		var is_f1 := A11yUIHelper.action_pressed(event, &"dev_panel")
+		var kev := event as InputEventKey
+		var is_esc: bool = kev != null and kev.pressed and not kev.echo and (kev.keycode == KEY_ESCAPE or kev.physical_keycode == KEY_ESCAPE)
+		if is_f1 or is_esc:
+			var g := _game()
+			if g and g.has_method("toggle_dev_panel"):
+				g.toggle_dev_panel(0)
+			get_viewport().set_input_as_handled()
+			return
+	if is_dealer_open():
+		var kev2 := event as InputEventKey
+		if kev2 != null and kev2.pressed and not kev2.echo and (kev2.keycode == KEY_ESCAPE or kev2.physical_keycode == KEY_ESCAPE):
+			var g := _game()
+			if g and g.has_method("close_dealership"):
+				g.close_dealership()
+			get_viewport().set_input_as_handled()
+			return
 	if _settings_scroll and _settings_scroll.visible and event is InputEventKey and event.pressed and not event.echo and (event.keycode == KEY_ESCAPE or event.physical_keycode == KEY_ESCAPE):
 		_close_settings()
 		get_viewport().set_input_as_handled()

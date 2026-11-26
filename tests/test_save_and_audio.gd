@@ -394,7 +394,66 @@ func run() -> void:
 				var load_air_ok: bool = ow5.load_saved_game(test_save_path)
 				await frames(2)
 				check(load_air_ok and ow5.player.in_vehicle and ow5.active_aircraft != null and ow5.active_aircraft.save_id == air_id, "Fresh scene restores active aircraft occupancy")
+
+				# Bought Dealership car + aircraft persist across Save/Load with player_owned = true
+				ow5._exit_aircraft()
+				ow5.money = 500000
+				var cat := GameModels.dealership_catalog()
+				var bought_car_id := ""
+				var bought_air_id := ""
+				for entry in cat:
+					if bought_car_id == "" and not bool(entry.get("is_aircraft", false)):
+						bought_car_id = str(entry.get("id", ""))
+					elif bought_air_id == "" and bool(entry.get("is_aircraft", false)):
+						bought_air_id = str(entry.get("id", ""))
+				var buy_car_ok: bool = bought_car_id != "" and ow5.buy_dealership_item(bought_car_id)
+				var saved_car_sid: String = ow5.active_vehicle.save_id if ow5.active_vehicle else ""
+				if ow5.active_vehicle:
+					ow5.active_vehicle.speed = 0.0
+					ow5._exit_vehicle()
+				var buy_air_ok: bool = bought_air_id != "" and ow5.buy_dealership_item(bought_air_id)
+				var saved_air_sid: String = ow5.active_aircraft.save_id if ow5.active_aircraft else ""
+				if ow5.active_aircraft:
+					ow5.active_aircraft.speed = 0.0
+					ow5._exit_aircraft()
+				check(buy_car_ok and buy_air_ok and saved_car_sid.begins_with("bought_veh:") and saved_air_sid.begins_with("bought_air:"), "Purchased dealership car and aircraft get deterministic bought_* save_ids")
+				ow5.save_current_game(test_save_path)
 				ow5.queue_free()
+				await process_frame
+
+				var ow6 = load("res://scenes/main.tscn").instantiate()
+				root.add_child(ow6)
+				current_scene = ow6
+				await process_frame
+				var load_bought_ok: bool = ow6.load_saved_game(test_save_path)
+				await frames(2)
+				var assets_after_load: Array[Dictionary] = ow6.a11y.radar.collect_targets(ow6, ow6.player.global_position, A11yRadar.Category.ASSETS)
+				var has_bought_car := false
+				var has_bought_air := false
+				for asset in assets_after_load:
+					var n = asset.get("node")
+					if n is Vehicle and n.save_id == saved_car_sid and n.player_owned:
+						has_bought_car = true
+					elif n is Aircraft and n.save_id == saved_air_sid and n.player_owned:
+						has_bought_air = true
+				check(load_bought_ok and has_bought_car and has_bought_air, "Save/Load restores dynamically purchased dealership vehicles and aircraft as My Assets")
+
+				# In-game Load when session already spawned a different bought_veh:0 replaces model cleanly
+				ow6.money = 50000
+				ow6._next_bought_veh_id = 0
+				ow6.buy_dealership_item("car_taxi")
+				if ow6.active_vehicle:
+					ow6.active_vehicle.speed = 0.0
+					ow6._exit_vehicle()
+				var reload_in_game_ok: bool = ow6.load_saved_game(test_save_path)
+				await frames(2)
+				var reloaded_v0: Vehicle = null
+				for v_node in ow6.get_tree().get_nodes_in_group("vehicles"):
+					var vv := v_node as Vehicle
+					if vv and ow6.is_ancestor_of(vv) and vv.save_id == saved_car_sid:
+						reloaded_v0 = vv
+				check(reload_in_game_ok and reloaded_v0 != null and reloaded_v0.display_name == "AMBER COUPE", "In-game Load replaces collided bought_veh:0 with saved model")
+				ow6.queue_free()
 				await process_frame
 			else:
 				ow4.queue_free()

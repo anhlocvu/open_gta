@@ -21,6 +21,7 @@ static func install() -> void:
 	keys["weapon_2"] = KEY_2
 	keys["weapon_3"] = KEY_3
 	keys["graphics_profile"] = KEY_F6
+	keys["dev_panel"] = KEY_F1
 	keys["melee"] = KEY_F
 	keys["armor_plate"] = KEY_4
 	keys["camera_view"] = KEY_V

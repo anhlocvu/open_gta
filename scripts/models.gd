@@ -47,6 +47,77 @@ const PARKED_CARS := [
 	["res://assets/cars/race.glb", "RACE"],
 ]
 
+const DEALERSHIP_PRICE_OVERRIDES := {
+	"coupe": 4500,
+	"cop": 3200,
+	"military_jeep": 4200,
+	"SportsCar2": 3800,
+	"race": 5200,
+	"suv-luxury": 3600,
+	"firetruck": 3400,
+	"ambulance": 2800,
+	"garbage-truck": 2600,
+	"truck": 2400,
+	"delivery": 1900,
+	"SUV": 2200,
+	"hatchback-sports": 2100,
+	"NormalCar2": 1600,
+	"Taxi": 1400,
+	"taxi": 1200,
+	"van": 1500,
+	"suv": 1700,
+	"sedan": 1100,
+	"NormalCar1": 950,
+}
+
+
+static func dealership_catalog() -> Array[Dictionary]:
+	var items: Array[Dictionary] = [
+		{"id": "coupe", "name": "AMBER COUPE", "category": "Sports", "path": "res://assets/cars/real/SportsCar.fbx", "vehicle_kind": 0, "is_aircraft": false, "civilian_plane": false, "tint": "e39a22", "price": int(DEALERSHIP_PRICE_OVERRIDES["coupe"])},
+		{"id": "cop", "name": "POLICE UNIT", "category": "Emergency", "path": "res://assets/cars/real/Cop.fbx", "vehicle_kind": 2, "is_aircraft": false, "civilian_plane": false, "tint": "", "price": int(DEALERSHIP_PRICE_OVERRIDES["cop"])},
+		{"id": "military_jeep", "name": "PATROL JEEP", "category": "Military", "path": "res://assets/cars/real/SUV.fbx", "vehicle_kind": 2, "is_aircraft": false, "civilian_plane": false, "tint": "4a5336", "price": int(DEALERSHIP_PRICE_OVERRIDES["military_jeep"])},
+	]
+	var seen_paths := {}
+	for row in CIV_CARS + PARKED_CARS:
+		var path := str(row[0])
+		if seen_paths.has(path):
+			continue
+		seen_paths[path] = true
+		var key := path.get_file().get_basename()
+		var prefix := "car_real_" if path.contains("/real/") else "car_"
+		var item_id := prefix + key.to_lower().replace("-", "_")
+		var price := int(DEALERSHIP_PRICE_OVERRIDES.get(key, 1500))
+		items.append({
+			"id": item_id,
+			"name": str(row[1]),
+			"category": "Car",
+			"path": path,
+			"vehicle_kind": 2,
+			"is_aircraft": false,
+			"civilian_plane": false,
+			"tint": "",
+			"price": price,
+		})
+	items.append({"id": "an2_civ", "name": "AN-2 CIVILIAN", "category": "Aircraft", "path": AN2, "vehicle_kind": -1, "is_aircraft": true, "civilian_plane": true, "tint": "", "price": 12000})
+	items.append({"id": "an2_mil", "name": "AN-2 MILITARY", "category": "Aircraft", "path": AN2, "vehicle_kind": -1, "is_aircraft": true, "civilian_plane": false, "tint": "", "price": 14000})
+	return items
+
+
+static func dealership_item(item_id: String) -> Dictionary:
+	for entry in dealership_catalog():
+		if str(entry.get("id", "")) == item_id:
+			return entry
+	return {}
+
+
+static func is_valid_car_model_path(path: String) -> bool:
+	if path == "":
+		return false
+	for entry in dealership_catalog():
+		if not bool(entry.get("is_aircraft", false)) and str(entry.get("path", "")) == path:
+			return true
+	return false
+
 
 static func _pick_row(rows: Array, seed_key: String) -> Array:
 	if seed_key == "":

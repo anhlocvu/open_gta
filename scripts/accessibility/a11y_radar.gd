@@ -2,10 +2,10 @@ class_name A11yRadar
 extends RefCounted
 ## Relative bearing, compass heading, and categorized Open World target scanner.
 
-enum Category { ALL = 0, ENEMIES = 1, CIVILIANS = 2, OBJECTIVES = 3, LOOT = 4, PLACES = 5 }
+enum Category { ALL = 0, ENEMIES = 1, CIVILIANS = 2, OBJECTIVES = 3, LOOT = 4, VEHICLES = 5, PLACES = 6, ASSETS = 7 }
 
 const COMPASS_NAMES := ["North", "Northeast", "East", "Southeast", "South", "Southwest", "West", "Northwest"]
-const CATEGORY_NAMES := ["All", "Enemies and Police", "Civilians", "Objectives", "Pickups", "Places and Vehicles"]
+const CATEGORY_NAMES := ["All", "Enemies and Police", "Civilians", "Objectives", "Pickups", "Vehicles", "Places", "My Assets"]
 
 var selected_category: int = Category.ALL
 var cursor := 0
@@ -118,19 +118,10 @@ func resolve_locked_target(game: Node, origin: Vector3) -> Dictionary:
 		var city = game.get("city")
 		if city == null:
 			return {}
-		var map := {
-			"place:gun_shop": ["Gun Shop", city.gun_shop_pos],
-			"place:bar": ["Bar", city.bar_pos],
-			"place:spray": ["Pay and Spray", city.spray_pos],
-			"place:garage": ["Drop Warehouse", city.garage_pos],
-			"place:hospital": ["Hospital", city.hospital_pos],
-			"place:station": ["Police Station", city.station_pos],
-			"place:base": ["Army Base", city.base_pos],
-		}
-		if map.has(locked_target_id):
-			var info: Array = map[locked_target_id]
-			var pos: Vector3 = info[1]
-			return {"id": locked_target_id, "label": info[0], "category": Category.PLACES, "position": pos, "distance": origin.distance_to(pos), "node": null, "aim_height": 1.2}
+		for p in _places_list(city):
+			if str(p[0]) == locked_target_id:
+				var pos: Vector3 = p[2]
+				return {"id": locked_target_id, "label": p[1], "category": Category.PLACES, "position": pos, "distance": origin.distance_to(pos), "node": null, "aim_height": 1.2}
 		return {}
 	var sep := locked_target_id.find(":")
 	if sep > 0:
@@ -190,6 +181,19 @@ func _find_by_id(items: Array[Dictionary], id: String) -> int:
 	return -1
 
 
+static func _places_list(city: Node) -> Array:
+	return [
+		["place:gun_shop", "Gun Shop", city.gun_shop_pos],
+		["place:bar", "Bar", city.bar_pos],
+		["place:spray", "Pay and Spray", city.spray_pos],
+		["place:garage", "Drop Warehouse", city.garage_pos],
+		["place:hospital", "Hospital", city.hospital_pos],
+		["place:station", "Police Station", city.station_pos],
+		["place:base", "Army Base", city.base_pos],
+		["place:dealership", "Vehicle Dealership", city.dealership_pos],
+	]
+
+
 func _collect_open_world(game: Node, origin: Vector3, cat: int, out: Array[Dictionary]) -> void:
 	var city = game.get("city")
 	if city == null:
@@ -206,16 +210,7 @@ func _collect_open_world(game: Node, origin: Vector3, cat: int, out: Array[Dicti
 				"node": null
 			})
 	if cat in [Category.ALL, Category.PLACES]:
-		var places := [
-			["place:gun_shop", "Gun Shop", city.gun_shop_pos],
-			["place:bar", "Bar", city.bar_pos],
-			["place:spray", "Pay and Spray", city.spray_pos],
-			["place:garage", "Drop Warehouse", city.garage_pos],
-			["place:hospital", "Hospital", city.hospital_pos],
-			["place:station", "Police Station", city.station_pos],
-			["place:base", "Army Base", city.base_pos],
-		]
-		for p in places:
+		for p in _places_list(city):
 			out.append({
 				"id": p[0],
 				"label": p[1],
@@ -224,27 +219,30 @@ func _collect_open_world(game: Node, origin: Vector3, cat: int, out: Array[Dicti
 				"distance": origin.distance_to(p[2]),
 				"node": null
 			})
+	if cat in [Category.ALL, Category.VEHICLES]:
 		var tree := game.get_tree()
 		if tree:
 			var veh_candidates: Array[Dictionary] = []
+			var max_range := 120.0 if cat == Category.ALL else 1000.0
+			var max_count := 8 if cat == Category.ALL else 16
 			for node in tree.get_nodes_in_group("vehicles"):
 				var v := node as Node3D
-				if v == null or not is_instance_valid(v) or bool(v.get("occupied")) or bool(v.get("wrecked")):
+				if v == null or not is_instance_valid(v) or bool(v.get("occupied")) or bool(v.get("wrecked")) or bool(v.get("exploded")):
 					continue
 				var d := origin.distance_to(v.global_position)
-				if d > 120.0:
+				if d > max_range:
 					continue
 				var dname := str(v.get("display_name")) if v.get("display_name") != null else "Vehicle"
 				veh_candidates.append({
 					"id": "veh:%d" % v.get_instance_id(),
 					"label": dname,
-					"category": Category.PLACES,
+					"category": Category.VEHICLES,
 					"position": v.global_position,
 					"distance": d,
 					"node": v
 				})
 			veh_candidates.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a.distance) < float(b.distance))
-			for i in mini(veh_candidates.size(), 8):
+			for i in mini(veh_candidates.size(), max_count):
 				out.append(veh_candidates[i])
 			for node in tree.get_nodes_in_group("aircraft"):
 				var jet := node as Node3D
@@ -253,7 +251,40 @@ func _collect_open_world(game: Node, origin: Vector3, cat: int, out: Array[Dicti
 				out.append({
 					"id": "jet:%d" % jet.get_instance_id(),
 					"label": str(jet.get("display_name")) if jet.get("display_name") != null else "Aircraft",
-					"category": Category.PLACES,
+					"category": Category.VEHICLES,
+					"position": jet.global_position,
+					"distance": origin.distance_to(jet.global_position),
+					"node": jet
+				})
+	if cat == Category.ASSETS:
+		var tree := game.get_tree()
+		if tree:
+			for node in tree.get_nodes_in_group("vehicles"):
+				var v := node as Node3D
+				if v == null or not is_instance_valid(v) or not bool(v.get("player_owned")):
+					continue
+				if bool(v.get("occupied")) or bool(v.get("wrecked")) or bool(v.get("exploded")):
+					continue
+				var dname := str(v.get("display_name")) if v.get("display_name") != null else "Vehicle"
+				out.append({
+					"id": "veh:%d" % v.get_instance_id(),
+					"label": "%s (Owned)" % dname,
+					"category": Category.ASSETS,
+					"position": v.global_position,
+					"distance": origin.distance_to(v.global_position),
+					"node": v
+				})
+			for node in tree.get_nodes_in_group("aircraft"):
+				var jet := node as Node3D
+				if jet == null or not is_instance_valid(jet) or not bool(jet.get("player_owned")):
+					continue
+				if bool(jet.get("occupied")) or bool(jet.get("wrecked")):
+					continue
+				var jname := str(jet.get("display_name")) if jet.get("display_name") != null else "Aircraft"
+				out.append({
+					"id": "jet:%d" % jet.get_instance_id(),
+					"label": "%s (Owned)" % jname,
+					"category": Category.ASSETS,
 					"position": jet.global_position,
 					"distance": origin.distance_to(jet.global_position),
 					"node": jet

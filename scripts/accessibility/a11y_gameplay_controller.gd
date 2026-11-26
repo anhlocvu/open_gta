@@ -183,7 +183,10 @@ func announce_weapon_switch(player: Player, requested_id := -1) -> void:
 		A11yUIHelper.say("Unarmed, fists.", true, 2, &"a11y_weapon", true)
 		return
 	var wname := Player.weapon_spoken_name(player.weapon)
-	A11yUIHelper.say("%s, %d in mag, %d reserve." % [wname, int(player.magazines.get(player.weapon, 0)), int(player.ammo.get(player.weapon, 0))], true, 2, &"a11y_weapon", true)
+	if player.infinite_ammo:
+		A11yUIHelper.say("%s, infinite ammo." % wname, true, 2, &"a11y_weapon", true)
+	else:
+		A11yUIHelper.say("%s, %d in mag, %d reserve." % [wname, int(player.magazines.get(player.weapon, 0)), int(player.ammo.get(player.weapon, 0))], true, 2, &"a11y_weapon", true)
 
 
 func _tick_player_cues(player: Player) -> void:
@@ -191,6 +194,8 @@ func _tick_player_cues(player: Player) -> void:
 		if _prev_weapon != -1:
 			if player.weapon == Arsenal.Id.NONE:
 				A11yUIHelper.say("Unarmed, fists.", true, 2, &"a11y_weapon", true)
+			elif player.infinite_ammo:
+				A11yUIHelper.say("%s, infinite ammo." % Player.weapon_spoken_name(player.weapon), true, 2, &"a11y_weapon", true)
 			else:
 				A11yUIHelper.say("%s, %d in mag, %d reserve." % [Player.weapon_spoken_name(player.weapon), int(player.magazines.get(player.weapon, 0)), int(player.ammo.get(player.weapon, 0))], true, 2, &"a11y_weapon", true)
 		_prev_weapon = player.weapon
@@ -421,7 +426,7 @@ func _is_gameplay_active() -> bool:
 
 
 func _speak_context_help() -> void:
-	var msg := "Open world accessibility keys: W A S D move or drive. J and L turn, I and K look up and down, U levels horizon, O faces locked radar target, Shift O snaps aim to enemy. F, Semicolon, or Left click fires gun or punches when unarmed. Apostrophe or Right click aims. Minus and Equal cycle weapons, 0 holsters to fists, 1 to 3 and 5 select or buy guns, R reloads, E interacts. Z status, X objective, H compass, G sonar sweep. B next radar filter, Shift B previous filter, Comma and Period cycle targets, M beacon, P auto-walk or auto-drive. Tab or Escape pauses."
+	var msg := "Open world accessibility keys: W A S D move or drive. J and L turn, I and K look up and down, U levels horizon, O faces locked radar target, Shift O snaps aim to enemy. F, Semicolon, or Left click fires gun or punches when unarmed. Apostrophe or Right click aims. Minus and Equal cycle weapons, 0 holsters to fists, 1 to 3 and 5 select or buy guns, R reloads, E interacts, Enter opens Vehicle Dealership when inside showroom. Z status, X objective, H compass, G sonar sweep. B next radar filter, Shift B previous filter, Comma and Period cycle targets, M beacon, P auto-walk or auto-drive. Tab or Escape pauses."
 	A11yUIHelper.say(msg, true, 3, &"a11y_help", true)
 
 

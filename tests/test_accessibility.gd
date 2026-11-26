@@ -228,11 +228,47 @@ func run() -> void:
 	await process_frame
 	check(not ow.paused and not ow.player.locked, "Unpause restores gameplay")
 
-	# Open World Radar & live pickup tracking
+	# Open World Radar & live pickup tracking & split categories (Vehicles / Places / My Assets)
 	var ow_places := a11y.radar.collect_targets(ow, ow.player.global_position, A11yRadar.Category.PLACES)
+	var ow_vehicles := a11y.radar.collect_targets(ow, ow.player.global_position, A11yRadar.Category.VEHICLES)
+	var ow_assets_empty := a11y.radar.collect_targets(ow, ow.player.global_position, A11yRadar.Category.ASSETS)
 	var ow_loot_before := a11y.radar.collect_targets(ow, ow.player.global_position, A11yRadar.Category.LOOT)
-	check(ow_places.size() >= 7, "Open World radar enumerates Harbor District landmarks and vehicles")
+	var places_only_landmarks := ow_places.size() == 8
+	for item in ow_places:
+		if not str(item.id).begins_with("place:"):
+			places_only_landmarks = false
+	var vehicles_only := ow_vehicles.size() > 0
+	for item in ow_vehicles:
+		if str(item.id).begins_with("place:"):
+			vehicles_only = false
+	check(places_only_landmarks, "Places filter enumerates all 8 map landmarks only (no vehicles)")
+	check(vehicles_only, "Vehicles filter enumerates vehicles/aircraft only (no places)")
+	check(ow_assets_empty.is_empty(), "My Assets filter is empty before owning or hijacking vehicles")
 	check(ow_loot_before.size() > 0, "Open World radar enumerates live world_pickups")
+
+	# Hospital, Police Station & Health pickup outside static colliders + Auto-Walk reaches Hospital
+	var space_chk: PhysicsDirectSpaceState3D = ow.player.get_world_3d().direct_space_state
+	var _point_clear := func(p: Vector3) -> bool:
+		var pq := PhysicsPointQueryParameters3D.new()
+		pq.position = p
+		pq.collision_mask = 1
+		return space_chk.intersect_point(pq).is_empty()
+	check(_point_clear.call(ow.city.hospital_pos + Vector3(0.0, 1.0, 0.0)), "Hospital pos is outside building wall collider")
+	check(_point_clear.call(ow.city.station_pos + Vector3(0.0, 1.0, 0.0)), "Police Station pos is outside building wall collider")
+	check(ow.city.health_spawns.size() > 0 and _point_clear.call(ow.city.health_spawns[0] + Vector3(0.0, 0.5, 0.0)), "Hospital health pickup is outside building wall collider")
+	ow.player.global_position = ow.city.hospital_pos + Vector3(0.0, 0.0, 7.5)
+	ow.player.velocity = Vector3.ZERO
+	a11y.radar.locked_target_id = "place:hospital"
+	a11y.nav.target_label = "Hospital"
+	a11y.nav.target_position = ow.city.hospital_pos
+	a11y.nav.start_autowalk()
+	await frames(120)
+	check(not a11y.nav.autowalk_active and ow.player.global_position.distance_to(ow.city.hospital_pos) <= 2.4, "Auto-Walk arrives cleanly at Hospital entrance without wall looping")
+	a11y.nav.stop_autowalk(ow.player)
+	ow.player.global_position = ow.city.player_spawn
+	ow.player.velocity = Vector3.ZERO
+	a11y.radar.locked_target_id = ""
+	await frames(2)
 	if ow_loot_before.size() > 0:
 		var first_pickup: Node = ow_loot_before[0].node
 		first_pickup.queue_free()
@@ -419,6 +455,15 @@ func run() -> void:
 
 		ow._exit_vehicle()
 		await frames(2)
+
+		# Stolen coupe is tracked in My Assets even from across the map (> 120m)
+		ow.player.global_position = Vector3(-220.0, 0.15, -220.0)
+		var assets_far := a11y.radar.collect_targets(ow, ow.player.global_position, A11yRadar.Category.ASSETS)
+		var found_coupe := false
+		for aitem in assets_far:
+			if aitem.get("node") == ow.coupe:
+				found_coupe = true
+		check(found_coupe, "My Assets tracks hijacked vehicle city-wide beyond 120m")
 
 	ow.queue_free()
 	await process_frame

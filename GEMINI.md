@@ -288,3 +288,41 @@ Fixed driven/stolen vehicles vanishing across Save/Load (`CONTINUE GAME` / `LOAD
 - `godot_console --headless --path . --quit-after 5`: exit `0`.
 - Re-exported `export/windows/OperationChaos.exe` (`109,149,184` bytes) and `export/windows/OperationChaos.pck` (`114,874,684` bytes); verified `OperationChaos.exe --headless --quit-after 5` exits cleanly (`exit code 0`).
 - Note: Interactive listening QA of the updated engine audio and live Windows gameplay remains to be manually confirmed by the user.
+
+
+## Session: 2026-11-26 — Radar Split (`Vehicles` / `Places` / `My Assets`), `anhloc.env` Dev Panel, Vehicle Dealership & Hospital Navigation Fix
+
+### Summary
+Split the Open World Radar's combined `Places and Vehicles` category into separate `Vehicles`, `Places` (all 8 Harbor District landmarks city-wide), and `My Assets` (all purchased and hijacked/boarded vehicles and aircraft city-wide); fixed the Hospital and Police Station building collision overlap that trapped Auto-Walk in a loop; implemented `DevMode` gated by `anhloc.env` (`lll20042004`) with an NVDA-accessible `F1` Dev Panel; and added the `Vehicle Dealership` (`AUTO`) with an accessible purchase menu (`Enter`), external spawn + immediate seating, and full Save/Load support, governed by SpecKit (`specs/008-radar-split-dev-dealership-hospital-fix/`) and ECC (`tdd-guide` + `code-reviewer`).
+
+### Key Changes
+- **Radar Split & `My Assets` Tracking (`scripts/accessibility/a11y_radar.gd`, `scripts/radar.gd`, `scripts/vehicle.gd`, `scripts/aircraft.gd`, `scripts/game.gd`)**:
+  - Updated `A11yRadar.Category` to `ALL`, `ENEMIES`, `CIVILIANS`, `OBJECTIVES`, `LOOT`, `VEHICLES`, `PLACES`, and `ASSETS` (`My Assets`).
+  - `Category.PLACES` returns all 8 map landmarks (`Gun Shop`, `Bar`, `Pay and Spray`, `Drop Warehouse`, `Hospital`, `Police Station`, `Army Base`, `Vehicle Dealership`) across the entire map with zero vehicles; `Category.VEHICLES` returns unoccupied vehicles and aircraft; `Category.ASSETS` tracks all intact unoccupied vehicles and aircraft with `player_owned == true` (purchased at Dealership or entered/stolen via `_enter_vehicle()` / `_enter_aircraft()`) city-wide without a 120m limit.
+  - Synchronized `Radar._draw()` highlighting/dimming across `VEHICLES`, `PLACES`, and `ASSETS` (cyan blips for owned assets).
+- **Hospital & Police Station Entrance Clearance (`scripts/city.gd`, `scripts/game.gd`)**:
+  - Shifted `hospital_pos` and `station_pos` forward onto each block's open front apron (`+7.2m`) and set the Hospital (`Vector3(20, 28, 12)`) and Police Station (`Vector3(18, 24, 12)`) buildings back at `-9.2m` so `hospital_pos`, `station_pos`, `health_spawns[0]`, and `_respawn()` points sit completely outside static building colliders for clean Auto-Walk / Auto-Drive arrival.
+- **Dev Mode (`anhloc.env`) & `F1` Dev Panel (`scripts/dev_mode.gd`, `scripts/combat_input.gd`, `scripts/player.gd`, `scripts/hud.gd`, `scripts/game.gd`, `export_presets.cfg`)**:
+  - Added `DevMode` reading `anhloc.env` beside the executable (with `res://anhloc.env` editor fallback) and verifying the `lll20042004` code via salted SHA-256 comparison (`*.env` excluded on both Android and Windows export presets).
+  - Bound `F1` (`dev_panel`) to toggle an NVDA-accessible Dev Panel (`GameHUD._dev_panel`) with Add Infinite Money (`$999,999,999` + spend bypass), Infinite Ammo + All Weapons (`Player.infinite_ammo`), Clear Wanted Level, Full Health & Armor, God Mode (`Player.god_mode`), and Repair Current Vehicle.
+- **Vehicle Dealership (`scripts/models.gd`, `scripts/city.gd`, `scripts/hud.gd`, `scripts/game.gd`)**:
+  - Added `GameModels.dealership_catalog()` with unique IDs covering every vehicle (`AMBER COUPE`, `POLICE UNIT`, `PATROL JEEP`, and every unique car in `CIV_CARS` & `PARKED_CARS`) plus `AN-2 CIVILIAN` and `AN-2 MILITARY` aircraft.
+  - Placed `Vehicle Dealership` (`AUTO`) in block `(6, 4)` with open exterior spawn lane `dealership_spawn_pos` on `st_zs[5]`. Pressing `Enter` near `dealership_pos` opens `GameHUD._dealer_panel`; purchasing deducts cash, spawns the vehicle/aircraft outside without overlapping existing vehicles, marks `player_owned = true`, and seats the player immediately.
+  - Added Save/Load reconstruction and cleanup for dynamic `bought_veh:*` and `bought_air:*` assets with `GameModels.is_valid_car_model_path()` and `Color.html_is_valid()` sanitization; routed `[`/`]`/`\`/`/` NVDA speech review keys before modal early returns.
+
+### Verified Checks (Post-Final-Edit, Headless)
+- `tests/test_dealership_and_dev.gd`: 21 checks, 0 failures
+- `tests/test_accessibility.gd`: 81 checks, 0 failures
+- `tests/test_save_and_audio.gd`: 63 checks, 0 failures
+- `tests/test_accessibility_speech.gd`: 20 checks, 0 failures
+- `tests/test_combat.gd`: 44 checks, 0 failures
+- `tests/test_cover.gd`: 10 checks, 0 failures
+- `tests/test_game_integration.gd`: 18 checks, 0 failures
+- `tests/test_harbor_feel.gd`: 13 checks, 0 failures
+- `tests/test_stage_one.gd`: 24 checks, 0 failures
+- Total headless verified: **294 checks, 0 failures**.
+- `godot_console.exe --headless --path . --quit-after 5`: exit `0`.
+- **Windows Release Export**:
+  - Exported `export/windows/OperationChaos.exe` (`109,149,184` bytes) and `export/windows/OperationChaos.pck` (`114,896,060` bytes).
+  - Verified `OperationChaos.exe --headless --quit-after 5` exits cleanly (`exit code 0`).
+- Note: Interactive gameplay with live Windows `NVDA.exe` speech output remains to be manually verified by the user.

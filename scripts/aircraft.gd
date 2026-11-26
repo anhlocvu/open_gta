@@ -6,6 +6,8 @@ const GRAVITY := 18.0
 const Models = preload("res://scripts/models.gd")
 
 var save_id := ""
+var player_owned := false
+var civilian_variant := false
 var occupied := false
 var display_name := "AN-2"
 var speed := 0.0
@@ -69,7 +71,8 @@ func apply_time(night: bool) -> void:
 
 
 func _build_mesh() -> void:
-	add_child(Models.instance_plane(false))
+	display_name = "AN-2 CIVILIAN" if civilian_variant else "AN-2"
+	add_child(Models.instance_plane(civilian_variant))
 	var glow := Palette.mat(Color("ff5533"), 0.2, 0.2, Color("ff5533"), 2.4)
 	_box(Vector3(-0.45, 1.15, 5.1), Vector3(0.28, 0.18, 0.12), glow)
 	_box(Vector3(0.45, 1.15, 5.1), Vector3(0.28, 0.18, 0.12), glow)
@@ -168,6 +171,8 @@ func apply_damage(amount: float) -> void:
 func to_save_dict() -> Dictionary:
 	return {
 		"id": save_id,
+		"player_owned": player_owned,
+		"civilian_variant": civilian_variant,
 		"pos": SaveManager.vec3_to_array(global_position),
 		"rot_y": rotation.y,
 		"hp": hp,
@@ -188,6 +193,7 @@ func apply_save_dict(d: Dictionary) -> void:
 	speed = 0.0
 	velocity = Vector3.ZERO
 	occupied = false
+	player_owned = bool(d.get("player_owned", false))
 	hp = SaveManager.safe_float(d.get("hp"), 140.0, 0.0, 140.0)
 	wrecked = bool(d.get("wrecked", false))
 	if is_inside_tree():

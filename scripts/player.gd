@@ -11,6 +11,8 @@ const GRAVITY := 28.0
 
 var in_vehicle := false
 var locked := false
+var infinite_ammo := false
+var god_mode := false
 var vitality := HealthComponent.new()
 var health: float:
 	get: return vitality.current
@@ -245,7 +247,7 @@ func control_yaw() -> float:
 
 
 func take_damage(amount: float, bypass_armor := false) -> void:
-	if locked:
+	if locked or god_mode:
 		return
 	if amount > 0.0: cancel_plate()
 	vitality.apply_damage(amount, 1.0, bypass_armor)
@@ -381,6 +383,8 @@ func select_weapon(id: int) -> bool:
 func can_fire() -> bool:
 	if in_vehicle or locked or health <= 0.0 or weapon == Arsenal.Id.NONE or _fire_cd > 0.0 or reload_remaining > 0.0 or slide_remaining > 0.0 or tactical_remaining > 0.0 or plate_remaining > 0.0 or sprint_to_fire_remaining > 0.0 or vault_remaining > 0.0:
 		return false
+	if infinite_ammo:
+		return true
 	return int(magazines.get(weapon, 0)) > 0
 
 
@@ -395,7 +399,10 @@ func spend_shot() -> Dictionary:
 	if not can_fire():
 		return {}
 	var spec := Arsenal.spec(weapon)
-	magazines[weapon] = int(magazines.get(weapon, 0)) - 1
+	if infinite_ammo:
+		magazines[weapon] = Arsenal.data(weapon).magazine_size
+	else:
+		magazines[weapon] = int(magazines.get(weapon, 0)) - 1
 	_fire_cd = float(spec["rate"])
 	combat_remaining = 2.0
 	_gun_kick = 0.07
@@ -406,6 +413,8 @@ func spend_shot() -> Dictionary:
 func weapon_label() -> String:
 	if weapon == Arsenal.Id.NONE:
 		return ""
+	if infinite_ammo:
+		return "%s  ∞" % Arsenal.spec(weapon)["name"]
 	return "%s  %d / %d%s" % [Arsenal.spec(weapon)["name"], int(magazines.get(weapon, 0)), int(ammo.get(weapon, 0)), "  RELOADING" if reload_remaining > 0.0 else ""]
 
 func request_reload() -> bool:
